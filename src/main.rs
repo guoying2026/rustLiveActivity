@@ -116,19 +116,15 @@ async fn live_activity(
         .collect();
 
     // 构建 tokenPrice 字符串
-    // 构建 tokenPrice 字符串
     let token_price = if let Some(token_map) = &data.token {
         if token_map.is_empty() {
-            // 如果 token 是空的 HashMap，则返回一个空字符串
             String::new()
         } else {
-            // 遍历 token，构建 token_price 字符串
             token_map.iter().fold(String::new(), |acc, (key, v)| {
                 format!("{}{}|{}|{};", acc, key, v.last_price, v.change24h)
             })
         }
     } else {
-        // 如果 token 为 None，则返回一个空字符串
         String::new()
     };
     if token_price.is_empty() {
