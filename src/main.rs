@@ -116,12 +116,29 @@ async fn live_activity(
         .collect();
 
     // 构建 tokenPrice 字符串
-    let token_price = data.token.iter().fold(String::new(), |acc, (key, v)| {
-        format!("{}{}|{}|{};", acc, key, v.last_price, v.change24h)
-    });
+    let token_price = if data.token.is_empty() {
+        // 如果 token 为空，返回一个空字符串
+        String::new()
+    } else {
+        // 遍历 token，构建 token_price 字符串
+        data.token.iter().fold(String::new(), |acc, (key, v)| {
+            format!("{}{}|{}|{};", acc, key, v.last_price, v.change24h)
+        })
+    };
 
-    // 更新 IosLiveActivityContent
-    if data.total_market_cap.is_none() || data.market_cap_change24h_usd.is_none() {
+    if token_price.is_empty() {
+        // 如果 token_price 为空，则处理为默认值
+        sqlx::query!(
+        "UPDATE ios_live_activity_content SET is_send = 1, token_price = '' WHERE id = ?",
+        data.id
+    )
+            .execute(pool.get_ref())
+            .await
+            .map_err(|e| {
+                error!("Failed to update ios_live_activity_content: {:?}", e);
+                actix_web::error::ErrorInternalServerError("Failed to update database")
+            })?;
+    } else if data.total_market_cap.is_none() || data.market_cap_change24h_usd.is_none() {
         sqlx::query!(
             "UPDATE ios_live_activity_content SET is_send = 1, token_price = ?, total_market_cap = 0, market_cap_change24h_usd = '' WHERE id = ?",
             token_price,
@@ -199,6 +216,8 @@ async fn live_activity(
                         });
                     }
                 }
+            } else {
+                result = Vec::new();
             }
 
             // 构建 LiveActivity 结构
