@@ -5,7 +5,7 @@ mod push_notification;
 mod utils;
 
 use actix_web::{web, App, HttpResponse, HttpServer, Error, HttpRequest};
-use serde::Deserialize;
+use serde::{Deserialize};
 use models::IosLiveActivityContent;
 use push_notification::{send_push_notification, LiveActivity, LiveActivityContentState, Alert, TokenPrice};
 use utils::{format_decimal, deal_number, format_percentage};
@@ -72,7 +72,7 @@ fn get_sample_data() -> Data {
 #[derive(Deserialize, Clone)]
 struct AddRequest {
     id: i32,
-    token: HashMap<String, TokenInput>, // 修改为 HashMap
+    token: Option<HashMap<String, TokenInput>>, // 修改为 HashMap
     total_market_cap: Option<String>,
     market_cap_change24h_usd: Option<String>,
 }
@@ -116,16 +116,21 @@ async fn live_activity(
         .collect();
 
     // 构建 tokenPrice 字符串
-    let token_price = if data.token.is_empty() {
-        // 如果 token 为空，返回一个空字符串
-        String::new()
+    // 构建 tokenPrice 字符串
+    let token_price = if let Some(token_map) = &data.token {
+        if token_map.is_empty() {
+            // 如果 token 是空的 HashMap，则返回一个空字符串
+            String::new()
+        } else {
+            // 遍历 token，构建 token_price 字符串
+            token_map.iter().fold(String::new(), |acc, (key, v)| {
+                format!("{}{}|{}|{};", acc, key, v.last_price, v.change24h)
+            })
+        }
     } else {
-        // 遍历 token，构建 token_price 字符串
-        data.token.iter().fold(String::new(), |acc, (key, v)| {
-            format!("{}{}|{}|{};", acc, key, v.last_price, v.change24h)
-        })
+        // 如果 token 为 None，则返回一个空字符串
+        String::new()
     };
-
     if token_price.is_empty() {
         // 如果 token_price 为空，则处理为默认值
         sqlx::query!(
