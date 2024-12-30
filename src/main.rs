@@ -6,7 +6,7 @@ mod utils;
 
 use models::{IosLiveActivity, IosLiveActivityContent};
 use push_notification::{send_push_notification, LiveActivity, LiveActivityContentState, Alert, TokenPrice, PushNotificationError};
-use utils::format_decimal;
+use utils::{format_decimal, deal_number, format_percentage};
 use std::collections::HashMap;
 use chrono::Utc;
 use sqlx::types::BigDecimal; // 使用 sqlx 自带的 BigDecimal
@@ -41,18 +41,17 @@ struct Data {
 #[derive(Clone)]
 struct TokenInfo {
     last_price: f64,
-    change24h: f64,
+    change24h: String,
 }
 
 fn get_sample_data() -> Data {
     Data {
-        id: 1,
+        id: 124,
         token: vec![
-            ("eth".to_string(), TokenInfo { last_price: 0.000200, change24h: 5.0 }),
-            ("btc".to_string(), TokenInfo { last_price: 0.000022, change24h: -2.5 }),
+            ("SWARMS".to_string(), TokenInfo { last_price: 0.06061590089171, change24h: "+57.29%".to_string() }),
         ],
-        total_market_cap: Some(BigDecimal::from_str("1000000000.0").unwrap()),
-        market_cap_change24h_usd: Some("1.2".to_string()),
+        total_market_cap: Some(BigDecimal::from_str("3435635411867.5000000000").unwrap()),
+        market_cap_change24h_usd: Some("-2.8544826685128".to_string()),
     }
 }
 
@@ -86,7 +85,7 @@ async fn live_activity(data: Data) -> Result<(), PushNotificationError> {
     // 更新 IosLiveActivityContent
     if data.total_market_cap.is_none() || data.market_cap_change24h_usd.is_none() {
         sqlx::query!(
-            "UPDATE ios_live_activity_content SET is_send = true, token_price = ?, total_market_cap = 0, market_cap_change24h_usd = '' WHERE id = ?",
+            "UPDATE ios_live_activity_content SET is_send = 1, token_price = ?, total_market_cap = 0, market_cap_change24h_usd = '' WHERE id = ?",
             token_price,
             data.id
         )
@@ -94,7 +93,7 @@ async fn live_activity(data: Data) -> Result<(), PushNotificationError> {
             .await?;
     } else {
         sqlx::query!(
-            "UPDATE ios_live_activity_content SET is_send = true, token_price = ? WHERE id = ?",
+            "UPDATE ios_live_activity_content SET is_send = 1, token_price = ? WHERE id = ?",
             token_price,
             data.id
         )
@@ -140,8 +139,8 @@ async fn live_activity(data: Data) -> Result<(), PushNotificationError> {
                     let parts: Vec<&str> = pair.split('|').collect();
                     if parts.len() == 3 {
                         let symbol = parts[0].to_uppercase();
-                        let price = format!("${}", format_decimal(parts[1].parse::<f64>().unwrap_or(0.0)));
-                        let change: f64 = parts[2].parse().unwrap_or(0.0);
+                        let price = format_decimal(parts[1].parse::<f64>().unwrap());
+                        let change = parts[2].to_string();
                         result.push(TokenPrice {
                             name: format!("{}/USDT", symbol),
                             price,
@@ -162,17 +161,31 @@ async fn live_activity(data: Data) -> Result<(), PushNotificationError> {
                     content: ios_res.content.clone(),
                     token_price: result,
                     market_text: "加密总市值".to_string(),
-                    typeTitle: type_title.to_string(),
-                    total_market_cap: data.total_market_cap.clone()
-                        .unwrap_or(BigDecimal::from_str("0").unwrap())
-                        .to_f64()
-                        .unwrap_or(0.0)
-                        .max(0.0),
-                    market_cap_change24h_usd: if let Some(ref m) = data.market_cap_change24h_usd {
-                        m.parse::<f64>().unwrap_or(0.0).max(0.0)
+                    type_title: type_title.to_string(),
+                    total_market_cap: if let Some(ref cap) = data.total_market_cap {
+                        let cap_f64 = cap.to_f64().unwrap_or(0.0);
+                        if cap_f64 > 0.0 {
+                            deal_number(cap_f64)
+                        } else {
+                            "0".to_string()
+                        }
                     } else {
-                        0.0
+                        "0".to_string()
                     },
+                    market_cap_change24h_usd: if let Some(ref change) = data.market_cap_change24h_usd {
+                        if let Ok(change_f64) = change.parse::<f64>() {
+                            if change_f64 != 0.0 {
+                                format_percentage(change)
+                            } else {
+                                "0".to_string()
+                            }
+                        } else {
+                            "0".to_string()
+                        }
+                    } else {
+                        "0".to_string()
+                    },
+
                     url: format!(
                         "blockbeats://m.theblockbeats.info/{}?id={}",
                         type_field, ios_res.article_id
@@ -194,7 +207,10 @@ async fn live_activity(data: Data) -> Result<(), PushNotificationError> {
 
             // 发送推送通知
             match send_push_notification(&platform, &audience, &live_activity, &options).await {
-                Ok(_) => info!("成功发送推送通知给 {}", live_activity_id),
+                Ok((status, response)) => {
+                    info!("成功发送推送通知给 {}: HTTP {}", live_activity_id, status);
+                    info!("推送响应: {}", response);
+                },
                 Err(e) => error!("发送推送通知给 {} 失败: {:?}", live_activity_id, e),
             }
         }));
