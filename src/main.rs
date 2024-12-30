@@ -18,7 +18,6 @@ use futures::StreamExt;
 use tokio::sync::Semaphore;
 use std::sync::Arc;
 use log::{info, error}; // 使用日志宏
-use env_logger;
 use std::str::FromStr;
 use crate::models::IosLiveActivitySelect;
 // 需要字符串解析
@@ -70,34 +69,28 @@ fn get_sample_data() -> Data {
         market_cap_change24h_usd: Some("-2.8544826685128".to_string()),
     }
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct AddRequest {
     id: i32,
-    token: Vec<TokenInput>,
+    token: HashMap<String, TokenInput>, // 修改为 HashMap
     total_market_cap: Option<String>,
     market_cap_change24h_usd: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
 struct TokenInput {
-    name: String,
+    #[serde(rename = "lastPrice")]
     last_price: f64,
+    #[serde(rename = "change24h")]
     change24h: String,
 }
 async fn live_activity(
     pool: web::Data<sqlx::MySqlPool>,
     req: web::Json<AddRequest>,
+    headers: HttpRequest,
 ) -> Result<HttpResponse, Error> {
-    // 将 AddRequest 转换为 Data
-    let data = Data {
-        id: req.id,
-        token: req.token.iter().map(|t| (t.name.clone(), TokenInfo {
-            last_price: t.last_price,
-            change24h: t.change24h.clone(),
-        })).collect(),
-        total_market_cap: req.total_market_cap.as_ref().map(|s| BigDecimal::from_str(s).unwrap_or(BigDecimal::from(0))),
-        market_cap_change24h_usd: req.market_cap_change24h_usd.clone(),
-    };
+    // 访问 AddRequest 数据
+    let data = req.into_inner();
     // 只推送到 iOS 平台
     let platform = vec!["ios"];
 
@@ -176,9 +169,9 @@ async fn live_activity(
     let mut push_tasks = FuturesUnordered::new();
 
     for live_activity_id in ios_live_activity_ids {
+        let data = data.clone(); // 克隆 data 以便在异步任务中使用
         let platform = platform.clone();
         let ios_res = ios_res.clone();
-        let data = data.clone();
         let live_activity_id = live_activity_id.clone();
         let semaphore = semaphore.clone();
 
@@ -220,11 +213,15 @@ async fn live_activity(
                     market_text: "加密总市值".to_string(),
                     type_title: type_title.to_string(),
                     total_market_cap: if let Some(ref cap) = data.total_market_cap {
-                        let cap_f64 = cap.to_f64().unwrap_or(0.0);
-                        if cap_f64 > 0.0 {
-                            deal_number(cap_f64)
+                        if let Ok(cap_big_decimal) = cap.parse::<BigDecimal>() {
+                            let cap_f64 = cap_big_decimal.to_f64().unwrap_or(0.0);
+                            if cap_f64 > 0.0 {
+                                deal_number(cap_f64)
+                            } else {
+                                "0".to_string()
+                            }
                         } else {
-                            "0".to_string()
+                            "0".to_string() // 如果解析失败，返回 "0"
                         }
                     } else {
                         "0".to_string()
