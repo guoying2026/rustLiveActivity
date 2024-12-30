@@ -4,6 +4,9 @@ use sqlx::FromRow;
 use chrono::NaiveDateTime;
 use sqlx::types::BigDecimal; // 使用 sqlx 自带的 BigDecimal
 
+pub struct IosLiveActivitySelect {
+    pub live_activity_id: String,
+}
 #[derive(Debug, Serialize, Deserialize, FromRow, Clone)]
 pub struct IosLiveActivity {
     pub id: i32,

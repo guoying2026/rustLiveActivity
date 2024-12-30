@@ -4,6 +4,20 @@ use std::collections::HashMap;
 use thiserror::Error;
 use reqwest::Client;
 
+
+use actix_web::error::ErrorInternalServerError;
+
+impl From<PushNotificationError> for actix_web::Error {
+    fn from(error: PushNotificationError) -> Self {
+        match error {
+            PushNotificationError::HttpRequestError(e) => ErrorInternalServerError(e),
+            PushNotificationError::DatabaseError(e) => ErrorInternalServerError(e),
+            PushNotificationError::ConfigError(msg) => ErrorInternalServerError(msg),
+            PushNotificationError::CustomError(msg) => ErrorInternalServerError(msg),
+        }
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum PushNotificationError {
     #[error("HTTP request failed: {0}")]

@@ -4,6 +4,8 @@ mod db;
 mod push_notification;
 mod utils;
 
+use actix_web::{web, App, HttpResponse, HttpServer, Responder};
+use serde::{Deserialize, Serialize};
 use models::{IosLiveActivity, IosLiveActivityContent};
 use push_notification::{send_push_notification, LiveActivity, LiveActivityContentState, Alert, TokenPrice, PushNotificationError};
 use utils::{format_decimal, deal_number, format_percentage};
@@ -17,17 +19,30 @@ use tokio::sync::Semaphore;
 use std::sync::Arc;
 use log::{info, error}; // 使用日志宏
 use env_logger;
-use std::str::FromStr; // 需要字符串解析
+use std::str::FromStr;
+use crate::models::IosLiveActivitySelect;
+// 需要字符串解析
 
 #[tokio::main]
-async fn main() -> Result<(), PushNotificationError> {
-    // 初始化日志
-    env_logger::init();
+async fn main()  -> std::io::Result<()> {
 
+    // 初始化数据库连接池
+    let pool = db::get_db_pool().await;
+
+    println!("Starting Rust API server on http://127.0.0.1:11115");
+
+    HttpServer::new(move || {
+        App::new()
+            .app_data(web::Data::new(pool.clone())) // 共享数据库池
+            .route("/send_live_activity", web::post().to(live_activity)) // 定义路由
+    })
+        .bind("127.0.0.1:11115")?
+        .run()
+        .await
     // 示例数据
-    let data = get_sample_data();
+    // let data = get_sample_data();
 
-    live_activity(data).await
+    // live_activity(data).await
 }
 
 #[derive(Clone)]
@@ -54,22 +69,51 @@ fn get_sample_data() -> Data {
         market_cap_change24h_usd: Some("-2.8544826685128".to_string()),
     }
 }
+#[derive(Deserialize)]
+struct AddRequest {
+    id: i32,
+    token: Vec<TokenInput>,
+    total_market_cap: Option<String>,
+    market_cap_change24h_usd: Option<String>,
+}
 
-async fn live_activity(data: Data) -> Result<(), PushNotificationError> {
+#[derive(Deserialize, Clone)]
+struct TokenInput {
+    name: String,
+    last_price: f64,
+    change24h: String,
+}
+async fn live_activity(
+    pool: web::Data<sqlx::MySqlPool>,
+    req: web::Json<AddRequest>,
+) -> Result<HttpResponse, actix_web::Error> {
+    // 将 AddRequest 转换为 Data
+    let data = Data {
+        id: req.id,
+        token: req.token.iter().map(|t| (t.name.clone(), TokenInfo {
+            last_price: t.last_price,
+            change24h: t.change24h.clone(),
+        })).collect(),
+        total_market_cap: req.total_market_cap.as_ref().map(|s| BigDecimal::from_str(s).unwrap_or(BigDecimal::from(0))),
+        market_cap_change24h_usd: req.market_cap_change24h_usd.clone(),
+    };
     // 只推送到 iOS 平台
     let platform = vec!["ios"];
-    let pool = db::get_db_pool().await;
 
     // 获取 iOS Live Activity
-    let ios_live_activity: Vec<IosLiveActivity> = sqlx::query_as!(
-        IosLiveActivity,
-        "SELECT * FROM ios_live_activity"
+    let ios_live_activity: Vec<IosLiveActivitySelect> = sqlx::query_as!(
+        IosLiveActivitySelect,
+        "SELECT live_activity_id FROM ios_live_activity"
     )
-        .fetch_all(&pool)
-        .await?;
+        .fetch_all(pool.get_ref())
+        .await
+        .map_err(|e| {
+            error!("Database query failed: {:?}", e);
+            actix_web::error::ErrorInternalServerError("Database query failed")
+        })?;
 
     if ios_live_activity.is_empty() {
-        return Err(PushNotificationError::CustomError("没有 live_activity_id".to_string()));
+        return Err(actix_web::error::ErrorInternalServerError("没有 live_activity_id"));
     }
 
     let ios_live_activity_ids: Vec<String> = ios_live_activity
@@ -89,16 +133,24 @@ async fn live_activity(data: Data) -> Result<(), PushNotificationError> {
             token_price,
             data.id
         )
-            .execute(&pool)
-            .await?;
+            .execute(pool.get_ref()) // 使用 pool.get_ref() 获取 &MySqlPool
+            .await
+            .map_err(|e| {
+                error!("Failed to update ios_live_activity_content: {:?}", e);
+                actix_web::error::ErrorInternalServerError("Failed to update database")
+            })?;
     } else {
         sqlx::query!(
             "UPDATE ios_live_activity_content SET is_send = 1, token_price = ? WHERE id = ?",
             token_price,
             data.id
         )
-            .execute(&pool)
-            .await?;
+            .execute(pool.get_ref()) // 使用 pool.get_ref() 获取 &MySqlPool
+            .await
+            .map_err(|e| {
+                error!("Failed to update ios_live_activity_content: {:?}", e);
+                actix_web::error::ErrorInternalServerError("Failed to update database")
+            })?;
     }
 
     // 获取更新后的 IosLiveActivityContent
@@ -108,7 +160,11 @@ async fn live_activity(data: Data) -> Result<(), PushNotificationError> {
         data.id
     )
         .fetch_one(&pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            error!("Failed to update ios_live_activity_content: {:?}", e);
+            actix_web::error::ErrorInternalServerError("Failed to update database")
+        })?;
 
     let type_field = if ios_res.is_flash != 0 { "flash" } else { "news" };
     let type_title = "实时消息";
@@ -224,5 +280,5 @@ async fn live_activity(data: Data) -> Result<(), PushNotificationError> {
         }
     }
 
-    Ok(())
+    Ok(HttpResponse::Ok().body("Live activity sent successfully"))
 }
