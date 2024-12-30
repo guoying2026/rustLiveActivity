@@ -93,8 +93,8 @@ pub async fn send_push_notification(
     });
 
     // 序列化 payload 为 JSON 字符串
-    let payload_str = serde_json::to_string_pretty(&payload)
-        .unwrap_or_else(|_| "Failed to serialize payload".to_string());
+    // let payload_str = serde_json::to_string_pretty(&payload)
+        // .unwrap_or_else(|_| "Failed to serialize payload".to_string());
 
     // println!("Push API request payload: {}", payload_str);
 

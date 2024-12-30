@@ -19,13 +19,13 @@ pub fn format_decimal(number: f64) -> String {
                 zero_count - 1,
                 remaining
             );
-            if(formatted.len() > 7) {
+            if formatted.len() > 7 {
                 return (&formatted[..7]).parse().unwrap();
             }
             return formatted;
         }
 
-        if(s.len() > 7) {
+        if s.len() > 7 {
             return (&s[..7]).parse().unwrap();
         }
     }

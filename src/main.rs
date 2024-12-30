@@ -4,10 +4,10 @@ mod db;
 mod push_notification;
 mod utils;
 
-use actix_web::{web, App, HttpResponse, HttpServer, Responder};
-use serde::{Deserialize, Serialize};
-use models::{IosLiveActivity, IosLiveActivityContent};
-use push_notification::{send_push_notification, LiveActivity, LiveActivityContentState, Alert, TokenPrice, PushNotificationError};
+use actix_web::{web, App, HttpResponse, HttpServer, Error, HttpRequest};
+use serde::Deserialize;
+use models::IosLiveActivityContent;
+use push_notification::{send_push_notification, LiveActivity, LiveActivityContentState, Alert, TokenPrice};
 use utils::{format_decimal, deal_number, format_percentage};
 use std::collections::HashMap;
 use chrono::Utc;
@@ -25,7 +25,8 @@ use crate::models::IosLiveActivitySelect;
 
 #[tokio::main]
 async fn main()  -> std::io::Result<()> {
-
+    // 加载环境变量
+    dotenv::dotenv().ok();
     // 初始化数据库连接池
     let pool = db::get_db_pool().await;
 
@@ -86,7 +87,7 @@ struct TokenInput {
 async fn live_activity(
     pool: web::Data<sqlx::MySqlPool>,
     req: web::Json<AddRequest>,
-) -> Result<HttpResponse, actix_web::Error> {
+) -> Result<HttpResponse, Error> {
     // 将 AddRequest 转换为 Data
     let data = Data {
         id: req.id,
@@ -159,7 +160,7 @@ async fn live_activity(
         "SELECT * FROM ios_live_activity_content WHERE id = ?",
         data.id
     )
-        .fetch_one(&pool)
+        .fetch_one(pool.get_ref())
         .await
         .map_err(|e| {
             error!("Failed to update ios_live_activity_content: {:?}", e);
