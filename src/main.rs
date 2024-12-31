@@ -282,7 +282,7 @@ async fn live_activity(
                     type_title: type_title.to_string(),
                     total_market_cap: format!("{}M", total_market_cap_task),
                     market_cap_change24h_usd: format!("${}M", market_cap_change24h_usd_task),
-                    time: formatted_date,
+                    // time: formatted_date,
 
                     url: format!(
                         "blockbeats://m.theblockbeats.info/{}?id={}",
