@@ -227,13 +227,13 @@ async fn live_activity(
     for live_activity_id in ios_live_activity_ids {
         let total_market_cap_task = total_market_cap_cloned.clone();
         let market_cap_change24h_usd_task = market_cap_change24h_usd_cloned.clone();
-        let time_task = time_value.clone();
+        // let time_task = time_value.clone();
 
         // 使用 `NaiveDate::parse_from_str` 解析日期
-        let date = NaiveDate::parse_from_str(&*time_task, "%Y年%m月%d日").expect("Failed to parse date");
+        // let date = NaiveDate::parse_from_str(&*time_task, "%Y年%m月%d日").expect("Failed to parse date");
 
         // 格式化为 "06月20日"
-        let formatted_date = date.format("%m月%d日").to_string();
+        // let formatted_date = date.format("%m月%d日").to_string();
         
         let data = data.clone(); // 克隆 data 以便在异步任务中使用
         let platform = platform.clone();

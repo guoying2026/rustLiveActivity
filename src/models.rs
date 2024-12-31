@@ -26,7 +26,7 @@ pub struct IosLiveActivityContent {
     pub is_send: i32, // int
     pub total_market_cap: BigDecimal, // decimal(30,10)
     pub market_cap_change24h_usd: String,
-    pub time: Option<NaiveDate>,
+    pub time: Option<NaiveDate>, 
     pub create_time: NaiveDateTime,
     pub update_time: NaiveDateTime,
 }
