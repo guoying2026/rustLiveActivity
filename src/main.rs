@@ -92,7 +92,7 @@ pub async fn get_market_data(pool: &MySqlPool) -> Result<(String, String, Option
         r#"
         SELECT amount, total, time
         FROM btc_etf
-        WHERE type = 1
+        WHERE type = 1 and status = 1
         ORDER BY time DESC
         LIMIT 1
         "#
