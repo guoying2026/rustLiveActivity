@@ -14,11 +14,13 @@ use chrono::Utc;
 use sqlx::types::BigDecimal; // 使用 sqlx 自带的 BigDecimal
 use num_traits::cast::ToPrimitive; // 导入 ToPrimitive trait
 use futures::stream::FuturesUnordered;
-use futures::StreamExt;
+use futures::{StreamExt, TryFutureExt};
 use tokio::sync::Semaphore;
 use std::sync::Arc;
 use log::{info, error}; // 使用日志宏
 use std::str::FromStr;
+use actix_web::error::ErrorInternalServerError;
+use sqlx::MySqlPool;
 use crate::models::IosLiveActivitySelect;
 // 需要字符串解析
 
@@ -84,6 +86,35 @@ struct TokenInput {
     #[serde(rename = "change24h")]
     change24h: String,
 }
+pub async fn get_market_data(pool: &MySqlPool) -> Result<(String, String, Option<chrono::NaiveDate>), Error> {
+    // 查询 `btc_etf` 表获取 `total_market_cap` 和 `market_cap_change24h_usd` 以及 `time`
+    let btc_etf_result = sqlx::query!(
+        r#"
+        SELECT amount, total, time
+        FROM btc_etf
+        WHERE type = 1
+        ORDER BY time DESC
+        LIMIT 1
+        "#
+    )
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| {
+            error!("Failed to query btc_etf table: {:?}", e);
+            ErrorInternalServerError("Failed to query btc_etf table")
+        })?;
+
+    // 处理查询结果
+    if let Some(result) = btc_etf_result {
+        let total_market_cap = format!("{:.2}", result.amount.to_f64().unwrap_or(0.0)); // 处理 `BigDecimal`
+        let market_cap_change24h_usd = format!("{:.2}", result.total.to_f64().unwrap_or(0.0)); // 处理 `BigDecimal`
+        let time = result.time; // 这里保留时间字段
+        Ok((total_market_cap, market_cap_change24h_usd, Option::from(time)))
+    } else {
+        // 如果查询结果为空，返回默认值
+        Ok(("0.00".to_string(), "0.00".to_string(), None))
+    }
+}
 async fn live_activity(
     pool: web::Data<sqlx::MySqlPool>,
     req: web::Json<AddRequest>,
@@ -127,43 +158,50 @@ async fn live_activity(
     } else {
         String::new()
     };
-    if token_price.is_empty() {
-        // 如果 token_price 为空，则处理为默认值
+    // 调用 `get_market_data` 获取数据
+    let (total_market_cap, market_cap_change24h_usd, time) = get_market_data(pool.get_ref()).await?;
+    // 构建时间字符串（如果 time 为 None，则使用默认值空字符串）
+    let time_value = time.map(|t| t.format("%Y-%m-%d").to_string()).unwrap_or_default();
+    // 将字符串克隆出来，避免所有权问题
+    let total_market_cap_cloned = total_market_cap.clone();
+    let market_cap_change24h_usd_cloned = market_cap_change24h_usd.clone();
+    // 更新 `ios_live_activity_content` 表
+    let query_result = if token_price.is_empty() {
+        // 如果 token_price 为空，则更新所有字段
         sqlx::query!(
-        "UPDATE ios_live_activity_content SET is_send = 1, token_price = '' WHERE id = ?",
-        data.id
+        "UPDATE ios_live_activity_content 
+         SET is_send = 1, token_price = '', total_market_cap = ?, market_cap_change24h_usd = ?, time = ? 
+         WHERE id = ?",
+        total_market_cap,               // 填充 total_market_cap
+        market_cap_change24h_usd,       // 填充 market_cap_change24h_usd
+        time_value,                     // 填充格式化后的时间值
+        data.id                         // 填充 id
     )
             .execute(pool.get_ref())
             .await
-            .map_err(|e| {
-                error!("Failed to update ios_live_activity_content: {:?}", e);
-                actix_web::error::ErrorInternalServerError("Failed to update database")
-            })?;
-    } else if data.total_market_cap.is_none() || data.market_cap_change24h_usd.is_none() {
-        sqlx::query!(
-            "UPDATE ios_live_activity_content SET is_send = 1, token_price = ?, total_market_cap = 0, market_cap_change24h_usd = '' WHERE id = ?",
-            token_price,
-            data.id
-        )
-            .execute(pool.get_ref()) // 使用 pool.get_ref() 获取 &MySqlPool
-            .await
-            .map_err(|e| {
-                error!("Failed to update ios_live_activity_content: {:?}", e);
-                actix_web::error::ErrorInternalServerError("Failed to update database")
-            })?;
     } else {
+        // 如果 token_price 不为空，仅更新 token_price
         sqlx::query!(
-            "UPDATE ios_live_activity_content SET is_send = 1, token_price = ? WHERE id = ?",
-            token_price,
-            data.id
-        )
-            .execute(pool.get_ref()) // 使用 pool.get_ref() 获取 &MySqlPool
+        "UPDATE ios_live_activity_content 
+         SET is_send = 1, token_price = ?, total_market_cap = ?, market_cap_change24h_usd = ?, time = ? 
+         WHERE id = ?",
+            token_price,                    // 填充 token_price
+            total_market_cap,               // 填充 total_market_cap
+            market_cap_change24h_usd,       // 填充 market_cap_change24h_usd
+            time_value,                     // 填充格式化后的时间值
+            data.id                         // 填充 id
+    )
+            .execute(pool.get_ref())
             .await
-            .map_err(|e| {
-                error!("Failed to update ios_live_activity_content: {:?}", e);
-                actix_web::error::ErrorInternalServerError("Failed to update database")
-            })?;
-    }
+    };
+    // 检查更新结果并处理错误
+    query_result.map_err(|e| {
+        error!(
+        "Failed to update ios_live_activity_content: id = {}, error: {:?}",
+        data.id, e
+    );
+        actix_web::error::ErrorInternalServerError("Failed to update database")
+    })?;
 
     // 获取更新后的 IosLiveActivityContent
     let ios_res: IosLiveActivityContent = sqlx::query_as!(
@@ -187,6 +225,9 @@ async fn live_activity(
     let mut push_tasks = FuturesUnordered::new();
 
     for live_activity_id in ios_live_activity_ids {
+        let total_market_cap_task = total_market_cap_cloned.clone();
+        let market_cap_change24h_usd_task = market_cap_change24h_usd_cloned.clone();
+        let time_task = time_value.clone();
         let data = data.clone(); // 克隆 data 以便在异步任务中使用
         let platform = platform.clone();
         let ios_res = ios_res.clone();
@@ -230,35 +271,10 @@ async fn live_activity(
                     title: ios_res.title.clone(),
                     content: ios_res.content.clone(),
                     token_price: result,
-                    market_text: "加密总市值".to_string(),
+                    market_text: "ETF总净流入".to_string(),
                     type_title: type_title.to_string(),
-                    total_market_cap: if let Some(ref cap) = data.total_market_cap {
-                        if let Ok(cap_big_decimal) = cap.parse::<BigDecimal>() {
-                            let cap_f64 = cap_big_decimal.to_f64().unwrap_or(0.0);
-                            if cap_f64 > 0.0 {
-                                deal_number(cap_f64)
-                            } else {
-                                "0".to_string()
-                            }
-                        } else {
-                            "0".to_string() // 如果解析失败，返回 "0"
-                        }
-                    } else {
-                        "0".to_string()
-                    },
-                    market_cap_change24h_usd: if let Some(ref change) = data.market_cap_change24h_usd {
-                        if let Ok(change_f64) = change.parse::<f64>() {
-                            if change_f64 != 0.0 {
-                                format_percentage(change)
-                            } else {
-                                "0".to_string()
-                            }
-                        } else {
-                            "0".to_string()
-                        }
-                    } else {
-                        "0".to_string()
-                    },
+                    total_market_cap: total_market_cap_task,
+                    market_cap_change24h_usd: market_cap_change24h_usd_task,
 
                     url: format!(
                         "blockbeats://m.theblockbeats.info/{}?id={}",
