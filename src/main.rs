@@ -38,7 +38,7 @@ async fn main()  -> std::io::Result<()> {
             .app_data(web::Data::new(pool.clone())) // 共享数据库池
             .route("/send_live_activity", web::post().to(live_activity)) // 定义路由
     })
-        .bind("127.0.0.1:11115")?
+        .bind("0.0.0.0:11115")?
         .run()
         .await
     // 示例数据
@@ -280,8 +280,8 @@ async fn live_activity(
                     token_price: result,
                     market_text: "ETF总净流入".to_string(),
                     type_title: type_title.to_string(),
-                    total_market_cap: format!("{}M", total_market_cap_task),
-                    market_cap_change24h_usd: format!("${}M", market_cap_change24h_usd_task),
+                    total_market_cap: format!("${}M", total_market_cap_task),
+                    market_cap_change24h_usd: format!("${}B", market_cap_change24h_usd_task),
                     // time: formatted_date,
 
                     url: format!(
