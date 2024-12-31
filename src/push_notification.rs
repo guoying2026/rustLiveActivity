@@ -42,6 +42,7 @@ pub struct LiveActivityContentState {
     pub(crate) type_title: String,
     pub(crate) total_market_cap: String,
     pub(crate) market_cap_change24h_usd: String,
+    pub(crate) time: String,
     pub(crate) url: String,
 }
 

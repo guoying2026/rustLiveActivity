@@ -10,7 +10,7 @@ use models::IosLiveActivityContent;
 use push_notification::{send_push_notification, LiveActivity, LiveActivityContentState, Alert, TokenPrice};
 use utils::{format_decimal, deal_number, format_percentage};
 use std::collections::HashMap;
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use sqlx::types::BigDecimal; // 使用 sqlx 自带的 BigDecimal
 use num_traits::cast::ToPrimitive; // 导入 ToPrimitive trait
 use futures::stream::FuturesUnordered;
@@ -228,6 +228,13 @@ async fn live_activity(
         let total_market_cap_task = total_market_cap_cloned.clone();
         let market_cap_change24h_usd_task = market_cap_change24h_usd_cloned.clone();
         let time_task = time_value.clone();
+
+        // 使用 `NaiveDate::parse_from_str` 解析日期
+        let date = NaiveDate::parse_from_str(&*time_task, "%Y年%m月%d日").expect("Failed to parse date");
+
+        // 格式化为 "06月20日"
+        let formatted_date = date.format("%m月%d日").to_string();
+        
         let data = data.clone(); // 克隆 data 以便在异步任务中使用
         let platform = platform.clone();
         let ios_res = ios_res.clone();
@@ -275,6 +282,7 @@ async fn live_activity(
                     type_title: type_title.to_string(),
                     total_market_cap: format!("{}M", total_market_cap_task),
                     market_cap_change24h_usd: format!("${}M", market_cap_change24h_usd_task),
+                    time: formatted_date,
 
                     url: format!(
                         "blockbeats://m.theblockbeats.info/{}?id={}",
