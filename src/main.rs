@@ -31,6 +31,12 @@ async fn main()  -> std::io::Result<()> {
     // 初始化数据库连接池
     let pool = db::get_db_pool().await;
 
+    // 设置会话时区为 Asia/Shanghai (UTC+8)
+    sqlx::query("SET time_zone = '+08:00'")
+        .execute(&pool)
+        .await.expect("TODO: panic message");
+
+    println!("MySQL session timezone set to Asia/Shanghai");
     println!("Starting Rust API server on http://127.0.0.1:11115");
 
     HttpServer::new(move || {
