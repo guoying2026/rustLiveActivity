@@ -26,6 +26,8 @@ use crate::models::IosLiveActivitySelect;
 
 #[tokio::main]
 async fn main()  -> std::io::Result<()> {
+    // 初始化日志
+    env_logger::init();
     // 加载环境变量
     dotenv::dotenv().ok();
     // 初始化数据库连接池
@@ -231,7 +233,13 @@ async fn live_activity(
     let semaphore = Arc::new(Semaphore::new(max_concurrent));
     let mut push_tasks = FuturesUnordered::new();
 
-    for live_activity_id in ios_live_activity_ids {
+    for (i, live_activity_id) in ios_live_activity_ids.into_iter().enumerate() {
+        // 在创建任务之前就可以先打印一行日志
+        info!(
+        "即将创建第 {}/{} 个推送任务，live_activity_id = {}",
+        i + 1,
+        max_concurrent,
+        live_activity_id,);
         let total_market_cap_task = total_market_cap_cloned.clone();
         let market_cap_change24h_usd_task = market_cap_change24h_usd_cloned.clone();
         // 先将它解析为 f64
@@ -255,9 +263,14 @@ async fn live_activity(
         let semaphore = semaphore.clone();
 
         push_tasks.push(tokio::spawn(async move {
-            // 获取一个许可，确保同时运行的任务不会超过限制
-            let _permit = semaphore.acquire().await.unwrap();
-
+            
+            // 这里也可以再打印一行日志，说明“真正开始执行”了
+            info!(
+            "开始执行第 {} 个任务，live_activity_id = {}",
+            i + 1,
+            live_activity_id
+        );
+            // 构建推送所需的各种数据
             let audience: HashMap<&str, &str> = [("live_activity_id", live_activity_id.as_str())].iter().cloned().collect();
 
             // 处理 token_price
@@ -325,14 +338,26 @@ async fn live_activity(
             // 发送推送通知
             match send_push_notification(&platform, &audience, &live_activity, &options).await {
                 Ok((status, response)) => {
-                    info!("成功发送推送通知给 {}: HTTP {}", live_activity_id, status);
+                    info!(
+                    "成功发送第 {} 个任务，live_activity_id = {}: HTTP {}",
+                    i + 1,
+                    live_activity_id,
+                    status
+                );
                     info!("推送响应: {}", response);
                 },
-                Err(e) => error!("发送推送通知给 {} 失败: {:?}", live_activity_id, e),
+                Err(e) => error!(
+                "发送第 {} 个任务，live_activity_id = {} 失败: {:?}",
+                i + 1,
+                live_activity_id,
+                e
+            ),
             }
         }));
     }
 
+    // 这里也可以在全部任务创建完后，打印一条日志，表示任务都已经生成
+    info!("共创建了 {} 个任务等待执行", max_concurrent);
     // 处理所有推送任务
     while let Some(res) = push_tasks.next().await {
         match res {
@@ -340,6 +365,6 @@ async fn live_activity(
             Err(e) => error!("推送任务执行失败: {:?}", e),
         }
     }
-
+    info!("所有任务都已执行完成");
     Ok(HttpResponse::Ok().body("Live activity sent successfully"))
 }
