@@ -309,9 +309,15 @@ async fn live_activity(
                 dismissal_date: Utc::now().timestamp() + 4 * 3600, // 4小时后
             };
 
+            // 从环境变量中读取值
+            let apns_production = std::env::var("APNS_PRODUCTION")
+                .unwrap_or_else(|_| "false".to_string()) // 默认值为 "false"
+                .parse::<bool>() // 将字符串解析为布尔值
+                .unwrap_or(false); // 如果解析失败，默认值为 false
+            
             // 构建推送选项
             let options = HashMap::from([
-                ("apns_production", serde_json::json!(false)),
+                ("apns_production", serde_json::json!(apns_production)),
                 ("time_to_live", serde_json::json!(86400)),
             ]);
 
