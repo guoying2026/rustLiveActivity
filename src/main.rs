@@ -227,13 +227,19 @@ async fn live_activity(
     for live_activity_id in ios_live_activity_ids {
         let total_market_cap_task = total_market_cap_cloned.clone();
         let market_cap_change24h_usd_task = market_cap_change24h_usd_cloned.clone();
-        // let time_task = time_value.clone();
+        // 先将它解析为 f64
+        let market_cap_m = market_cap_change24h_usd_task.parse::<f64>().unwrap_or(0.0);
+
+        // 将百万单位 (M) 转换为十亿单位 (B)
+        let market_cap_b = market_cap_m / 1000.0;
+        let formatted_market_cap = format!("{:.1}", market_cap_b);
+        let time_task = time_value.clone();
 
         // 使用 `NaiveDate::parse_from_str` 解析日期
-        // let date = NaiveDate::parse_from_str(&*time_task, "%Y年%m月%d日").expect("Failed to parse date");
+        let date = NaiveDate::parse_from_str(&*time_task, "%Y-%m-%d").expect("Failed to parse date");
 
         // 格式化为 "06月20日"
-        // let formatted_date = date.format("%m月%d日").to_string();
+        let formatted_date = date.format("%m月%d日").to_string();
         
         let data = data.clone(); // 克隆 data 以便在异步任务中使用
         let platform = platform.clone();
@@ -281,8 +287,8 @@ async fn live_activity(
                     market_text: "ETF总净流入".to_string(),
                     type_title: type_title.to_string(),
                     total_market_cap: format!("${}M", total_market_cap_task),
-                    market_cap_change24h_usd: format!("${}B", market_cap_change24h_usd_task),
-                    // time: formatted_date,
+                    market_cap_change24h_usd: format!("${}B", formatted_market_cap),
+                    time: formatted_date,
 
                     url: format!(
                         "blockbeats://m.theblockbeats.info/{}?id={}",
@@ -299,7 +305,7 @@ async fn live_activity(
 
             // 构建推送选项
             let options = HashMap::from([
-                ("apns_production", serde_json::json!(true)),
+                ("apns_production", serde_json::json!(false)),
                 ("time_to_live", serde_json::json!(86400)),
             ]);
 
