@@ -240,7 +240,7 @@ async fn live_activity(
 
         // 格式化为 "06月20日"
         let formatted_date = date.format("%m月%d日").to_string();
-        
+
         let data = data.clone(); // 克隆 data 以便在异步任务中使用
         let platform = platform.clone();
         let ios_res = ios_res.clone();
@@ -265,7 +265,7 @@ async fn live_activity(
                         let change = parts[2].to_string();
                         result.push(TokenPrice {
                             name: format!("{}/USDT", symbol),
-                            price,
+                            price: format!("${}", price),
                             change,
                             url: "https://p2p.binance.com/zh-CN/express/buy/ETH/CNY".to_string(),
                         });
