@@ -225,8 +225,9 @@ async fn live_activity(
     let type_field = if ios_res.is_flash != 0 { "flash" } else { "news" };
     let type_title = "实时消息";
 
-    // 设置并发限制，例如同时最多运行 10 个任务
-    let max_concurrent = 10;
+    // 动态设置 max_concurrent
+    let max_concurrent = ios_live_activity_ids.len();
+
     let semaphore = Arc::new(Semaphore::new(max_concurrent));
     let mut push_tasks = FuturesUnordered::new();
 
