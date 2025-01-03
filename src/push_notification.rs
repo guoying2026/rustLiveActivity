@@ -11,7 +11,6 @@ impl From<PushNotificationError> for actix_web::Error {
     fn from(error: PushNotificationError) -> Self {
         match error {
             PushNotificationError::HttpRequestError(e) => ErrorInternalServerError(e),
-            PushNotificationError::DatabaseError(e) => ErrorInternalServerError(e),
             PushNotificationError::ConfigError(msg) => ErrorInternalServerError(msg),
             PushNotificationError::CustomError(msg) => ErrorInternalServerError(msg),
         }
@@ -22,8 +21,6 @@ impl From<PushNotificationError> for actix_web::Error {
 pub enum PushNotificationError {
     #[error("HTTP request failed: {0}")]
     HttpRequestError(#[from] reqwest::Error),
-    #[error("Database error: {0}")]
-    DatabaseError(#[from] sqlx::Error),
     #[error("Configuration error: {0}")]
     ConfigError(String),
     #[error("Custom error: {0}")]
@@ -63,7 +60,7 @@ pub struct LiveActivity {
     pub(crate) dismissal_date: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct TokenPrice {
     pub(crate) name: String,
     pub(crate) price: String,
@@ -73,7 +70,7 @@ pub struct TokenPrice {
 
 pub async fn send_push_notification(
     platform: &[&str],
-    audience: &HashMap<&str, &str>,
+    live_activity_id: &str,
     live_activity: &LiveActivity,
     options: &HashMap<&str, serde_json::Value>,
 ) -> Result<(u16, String), PushNotificationError> {
@@ -83,6 +80,11 @@ pub async fn send_push_notification(
     let push_secret = std::env::var("JG_PUSH_SECRET")
         .map_err(|_| PushNotificationError::ConfigError("JG_PUSH_SECRET not set".to_string()))?;
 
+    // 构造一个单键的 HashMap，表示要推送给这个 live_activity_id
+    let audience = HashMap::from([
+        ("live_activity_id", live_activity_id),
+    ]);
+    
     // 构造请求数据
     let payload = serde_json::json!({
         "platform": platform, // 平台
@@ -92,14 +94,6 @@ pub async fn send_push_notification(
         }, // 通知内容
         "options": options, // 其他选项，如是否生产环境等
     });
-
-    // 序列化 payload 为 JSON 字符串
-    // let payload_str = serde_json::to_string_pretty(&payload)
-        // .unwrap_or_else(|_| "Failed to serialize payload".to_string());
-
-    // println!("Push API request payload: {}", payload_str);
-
-    // Ok((0, "1".to_string()))
 
     // 初始化 HTTP 客户端
     let client = Client::new();

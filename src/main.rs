@@ -1,370 +1,211 @@
-// src/main.rs
-mod models;
-mod db;
-mod push_notification;
-mod utils;
+mod push_notification; // 你自己的推送模块
+mod utils;             // 如果有其他工具函数
 
 use actix_web::{web, App, HttpResponse, HttpServer, Error, HttpRequest};
-use serde::{Deserialize};
-use models::IosLiveActivityContent;
-use push_notification::{send_push_notification, LiveActivity, LiveActivityContentState, Alert, TokenPrice};
-use utils::{format_decimal, deal_number, format_percentage};
-use std::collections::HashMap;
-use chrono::{NaiveDate, Utc};
-use sqlx::types::BigDecimal; // 使用 sqlx 自带的 BigDecimal
-use num_traits::cast::ToPrimitive; // 导入 ToPrimitive trait
+use serde::Deserialize;
+use log::{info, error};
+
 use futures::stream::FuturesUnordered;
-use futures::{StreamExt, TryFutureExt};
+use futures::StreamExt;
 use tokio::sync::Semaphore;
 use std::sync::Arc;
-use log::{info, error}; // 使用日志宏
-use std::str::FromStr;
-use actix_web::error::ErrorInternalServerError;
-use sqlx::MySqlPool;
-use crate::models::IosLiveActivitySelect;
-// 需要字符串解析
+use std::collections::HashMap;
+
+// 引入你自己的推送所需结构或函数
+use push_notification::{send_push_notification, LiveActivity, LiveActivityContentState, Alert, TokenPrice};
+// 假设你有一个函数 `format_decimal`，若不需要可删除
+use utils::format_decimal;
+
+/// 请求体：Rust 只接收，不做处理
+#[derive(Deserialize, Clone, Debug)]
+struct AddRequest {
+    /// 前端会传一批 live_activity_id，我们直接拿来用
+    ios_live_activity_ids: Vec<String>,
+
+    /// 前端传的 Token 数据（如 BTC, ETH...），不做格式化
+    token: Option<HashMap<String, TokenInput>>,
+
+    /// 前端传的市值、24h 变化这些字段，同样直接使用
+    total_market_cap: Option<String>,
+    market_cap_change24h_usd: Option<String>,
+
+    /// 前端可能也会传推送时需要的标题、内容等
+    title: Option<String>,
+    content: Option<String>,
+}
+
+/// TokenInput：例如 { "BTC": { "lastPrice": 30000.5, "change24h": "+5%" } }
+#[derive(Deserialize, Clone, Debug)]
+struct TokenInput {
+    #[serde(rename = "lastPrice")]
+    last_price: f64,
+
+    #[serde(rename = "change24h")]
+    change24h: String,
+}
 
 #[tokio::main]
-async fn main()  -> std::io::Result<()> {
+async fn main() -> std::io::Result<()> {
     // 初始化日志
     env_logger::init();
-    // 加载环境变量
-    dotenv::dotenv().ok();
-    // 初始化数据库连接池
-    let pool = db::get_db_pool().await;
 
-    // 设置会话时区为 Asia/Shanghai (UTC+8)
-    sqlx::query("SET time_zone = '+08:00'")
-        .execute(&pool)
-        .await.expect("TODO: panic message");
-
-    println!("MySQL session timezone set to Asia/Shanghai");
     println!("Starting Rust API server on http://127.0.0.1:11115");
 
-    HttpServer::new(move || {
+    HttpServer::new(|| {
         App::new()
-            .app_data(web::Data::new(pool.clone())) // 共享数据库池
-            .route("/send_live_activity", web::post().to(live_activity)) // 定义路由
+            // 直接定义路由，不再需要数据库
+            .route("/send_live_activity", web::post().to(live_activity))
     })
         .bind("0.0.0.0:11115")?
         .run()
         .await
-    // 示例数据
-    // let data = get_sample_data();
-
-    // live_activity(data).await
 }
 
-#[derive(Clone)]
-struct Data {
-    id: i32,
-    token: Vec<(String, TokenInfo)>,
-    total_market_cap: Option<BigDecimal>,
-    market_cap_change24h_usd: Option<String>,
-}
-
-#[derive(Clone)]
-struct TokenInfo {
-    last_price: f64,
-    change24h: String,
-}
-
-fn get_sample_data() -> Data {
-    Data {
-        id: 124,
-        token: vec![
-            ("SWARMS".to_string(), TokenInfo { last_price: 0.06061590089171, change24h: "+57.29%".to_string() }),
-        ],
-        total_market_cap: Some(BigDecimal::from_str("3435635411867.5000000000").unwrap()),
-        market_cap_change24h_usd: Some("-2.8544826685128".to_string()),
-    }
-}
-#[derive(Deserialize, Clone)]
-struct AddRequest {
-    id: i32,
-    token: Option<HashMap<String, TokenInput>>, // 修改为 HashMap
-    total_market_cap: Option<String>,
-    market_cap_change24h_usd: Option<String>,
-}
-
-#[derive(Deserialize, Clone)]
-struct TokenInput {
-    #[serde(rename = "lastPrice")]
-    last_price: f64,
-    #[serde(rename = "change24h")]
-    change24h: String,
-}
-pub async fn get_market_data(pool: &MySqlPool) -> Result<(String, String, Option<chrono::NaiveDate>), Error> {
-    // 查询 `btc_etf` 表获取 `total_market_cap` 和 `market_cap_change24h_usd` 以及 `time`
-    let btc_etf_result = sqlx::query!(
-        r#"
-        SELECT amount, total, time
-        FROM btc_etf
-        WHERE type = 1 and status = 1
-        ORDER BY time DESC
-        LIMIT 1
-        "#
-    )
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| {
-            error!("Failed to query btc_etf table: {:?}", e);
-            ErrorInternalServerError("Failed to query btc_etf table")
-        })?;
-
-    // 处理查询结果
-    if let Some(result) = btc_etf_result {
-        let total_market_cap = format!("{:.2}", result.amount.to_f64().unwrap_or(0.0)); // 处理 `BigDecimal`
-        let market_cap_change24h_usd = format!("{:.2}", result.total.to_f64().unwrap_or(0.0)); // 处理 `BigDecimal`
-        let time = result.time; // 这里保留时间字段
-        Ok((total_market_cap, market_cap_change24h_usd, Option::from(time)))
-    } else {
-        // 如果查询结果为空，返回默认值
-        Ok(("0.00".to_string(), "0.00".to_string(), None))
-    }
-}
+/// 处理 POST /send_live_activity
 async fn live_activity(
-    pool: web::Data<sqlx::MySqlPool>,
     req: web::Json<AddRequest>,
-    headers: HttpRequest,
+    _headers: HttpRequest,
 ) -> Result<HttpResponse, Error> {
-    // 访问 AddRequest 数据
+    // 1. 读取请求体
     let data = req.into_inner();
-    // 只推送到 iOS 平台
-    let platform = vec!["ios"];
+    info!("收到请求: {:?}", data);
 
-    // 获取 iOS Live Activity
-    let ios_live_activity: Vec<IosLiveActivitySelect> = sqlx::query_as!(
-        IosLiveActivitySelect,
-        "SELECT live_activity_id FROM ios_live_activity"
-    )
-        .fetch_all(pool.get_ref())
-        .await
-        .map_err(|e| {
-            error!("Database query failed: {:?}", e);
-            actix_web::error::ErrorInternalServerError("Database query failed")
-        })?;
-
-    if ios_live_activity.is_empty() {
-        return Err(actix_web::error::ErrorInternalServerError("没有 live_activity_id"));
+    // 如果前端没有传 ios_live_activity_ids，直接报错
+    if data.ios_live_activity_ids.is_empty() {
+        return Ok(HttpResponse::BadRequest().body("没有 live_activity_id"));
     }
 
-    let ios_live_activity_ids: Vec<String> = ios_live_activity
-        .iter()
-        .map(|activity| activity.live_activity_id.clone())
-        .collect();
+    // 2. 组装需要推送给哪些 id
+    let ios_live_activity_ids = data.ios_live_activity_ids.clone();
 
-    // 构建 tokenPrice 字符串
-    let token_price = if let Some(token_map) = &data.token {
-        if token_map.is_empty() {
-            String::new()
-        } else {
-            token_map.iter().fold(String::new(), |acc, (key, v)| {
-                format!("{}{}|{}|{};", acc, key, v.last_price, v.change24h)
-            })
+    // 3. 构建 token_price 列表（如需完全“不处理”，可以直接放空或者原样塞进 content_state）
+    let mut token_price_vec = Vec::new();
+    if let Some(token_map) = &data.token {
+        for (symbol, info) in token_map {
+            token_price_vec.push(TokenPrice {
+                // 假设只拼个名字和价格，这里不做任何转换
+                name: format!("{}/USDT", symbol.to_uppercase()),
+                price: format!("${}", format_decimal(info.last_price)), // 如果不想格式化，直接 info.last_price.to_string() 也行
+                change: info.change24h.clone(),
+                url: "https://p2p.binance.com/zh-CN/express/buy/ETH/CNY".to_string(),
+            });
         }
-    } else {
-        String::new()
-    };
-    // 调用 `get_market_data` 获取数据
-    let (total_market_cap, market_cap_change24h_usd, time) = get_market_data(pool.get_ref()).await?;
-    // 构建时间字符串（如果 time 为 None，则使用默认值空字符串）
-    let time_value = time.map(|t| t.format("%Y-%m-%d").to_string()).unwrap_or_default();
-    // 将字符串克隆出来，避免所有权问题
-    let total_market_cap_cloned = total_market_cap.clone();
-    let market_cap_change24h_usd_cloned = market_cap_change24h_usd.clone();
-    // 更新 `ios_live_activity_content` 表
-    let query_result = if token_price.is_empty() {
-        // 如果 token_price 为空，则更新所有字段
-        sqlx::query!(
-        "UPDATE ios_live_activity_content 
-         SET is_send = 1, token_price = '', total_market_cap = ?, market_cap_change24h_usd = ?, time = ? 
-         WHERE id = ?",
-        total_market_cap,               // 填充 total_market_cap
-        market_cap_change24h_usd,       // 填充 market_cap_change24h_usd
-        time_value,                     // 填充格式化后的时间值
-        data.id                         // 填充 id
-    )
-            .execute(pool.get_ref())
-            .await
-    } else {
-        // 如果 token_price 不为空，仅更新 token_price
-        sqlx::query!(
-        "UPDATE ios_live_activity_content 
-         SET is_send = 1, token_price = ?, total_market_cap = ?, market_cap_change24h_usd = ?, time = ? 
-         WHERE id = ?",
-            token_price,                    // 填充 token_price
-            total_market_cap,               // 填充 total_market_cap
-            market_cap_change24h_usd,       // 填充 market_cap_change24h_usd
-            time_value,                     // 填充格式化后的时间值
-            data.id                         // 填充 id
-    )
-            .execute(pool.get_ref())
-            .await
-    };
-    // 检查更新结果并处理错误
-    query_result.map_err(|e| {
-        error!(
-        "Failed to update ios_live_activity_content: id = {}, error: {:?}",
-        data.id, e
-    );
-        actix_web::error::ErrorInternalServerError("Failed to update database")
-    })?;
+    }
 
-    // 获取更新后的 IosLiveActivityContent
-    let ios_res: IosLiveActivityContent = sqlx::query_as!(
-        IosLiveActivityContent,
-        "SELECT * FROM ios_live_activity_content WHERE id = ?",
-        data.id
-    )
-        .fetch_one(pool.get_ref())
-        .await
-        .map_err(|e| {
-            error!("Failed to update ios_live_activity_content: {:?}", e);
-            actix_web::error::ErrorInternalServerError("Failed to update database")
-        })?;
+    // 4. 其他字段不处理、直接拿过来用
+    let total_market_cap = data.total_market_cap.clone().unwrap_or_default();
+    let market_cap_change24h_usd = data.market_cap_change24h_usd.clone().unwrap_or_default();
+    let title = data.title.clone().unwrap_or_else(|| "实时消息".to_string());
+    let content = data.content.clone().unwrap_or_else(|| "这里是默认内容".to_string());
 
-    let type_field = if ios_res.is_flash != 0 { "flash" } else { "news" };
-    let type_title = "实时消息";
-
-    // 动态设置 max_concurrent
+    // 5. 并发推送
     let max_concurrent = ios_live_activity_ids.len();
-
     let semaphore = Arc::new(Semaphore::new(max_concurrent));
     let mut push_tasks = FuturesUnordered::new();
 
     for (i, live_activity_id) in ios_live_activity_ids.into_iter().enumerate() {
-        // 在创建任务之前就可以先打印一行日志
+        // 创建任务日志
         info!(
-        "即将创建第 {}/{} 个推送任务，live_activity_id = {}",
-        i + 1,
-        max_concurrent,
-        live_activity_id,);
-        let total_market_cap_task = total_market_cap_cloned.clone();
-        let market_cap_change24h_usd_task = market_cap_change24h_usd_cloned.clone();
-        // 先将它解析为 f64
-        let market_cap_m = market_cap_change24h_usd_task.parse::<f64>().unwrap_or(0.0);
-
-        // 将百万单位 (M) 转换为十亿单位 (B)
-        let market_cap_b = market_cap_m / 1000.0;
-        let formatted_market_cap = format!("{:.1}", market_cap_b);
-        let time_task = time_value.clone();
-
-        // 使用 `NaiveDate::parse_from_str` 解析日期
-        let date = NaiveDate::parse_from_str(&*time_task, "%Y-%m-%d").expect("Failed to parse date");
-
-        // 格式化为 "06月20日"
-        let formatted_date = date.format("%m月%d日").to_string();
-
-        let data = data.clone(); // 克隆 data 以便在异步任务中使用
-        let platform = platform.clone();
-        let ios_res = ios_res.clone();
-        let live_activity_id = live_activity_id.clone();
-        let semaphore = semaphore.clone();
-
-        push_tasks.push(tokio::spawn(async move {
-            
-            // 这里也可以再打印一行日志，说明“真正开始执行”了
-            info!(
-            "开始执行第 {} 个任务，live_activity_id = {}",
+            "即将创建第 {}/{} 个推送任务: {}",
             i + 1,
+            max_concurrent,
             live_activity_id
         );
-            // 构建推送所需的各种数据
-            let audience: HashMap<&str, &str> = [("live_activity_id", live_activity_id.as_str())].iter().cloned().collect();
 
-            // 处理 token_price
-            let mut result = Vec::new();
-            if !ios_res.token_price.is_empty() {
-                let pairs: Vec<&str> = ios_res.token_price.trim_end_matches(';').split(';').collect();
-                for pair in pairs {
-                    let parts: Vec<&str> = pair.split('|').collect();
-                    if parts.len() == 3 {
-                        let symbol = parts[0].to_uppercase();
-                        let price = format_decimal(parts[1].parse::<f64>().unwrap());
-                        let change = parts[2].to_string();
-                        result.push(TokenPrice {
-                            name: format!("{}/USDT", symbol),
-                            price: format!("${}", price),
-                            change,
-                            url: "https://p2p.binance.com/zh-CN/express/buy/ETH/CNY".to_string(),
-                        });
-                    }
-                }
-            } else {
-                result = Vec::new();
-            }
+        // 复制进任务
+        let semaphore = semaphore.clone();
+        let title_clone = title.clone();
+        let content_clone = content.clone();
+        let tmc = total_market_cap.clone();
+        let mcu = market_cap_change24h_usd.clone();
+        let tp_vec = token_price_vec.clone();
 
-            // 构建 LiveActivity 结构
+        push_tasks.push(tokio::spawn(async move {
+            let _permit = semaphore.acquire().await.unwrap();
+
+            info!(
+                "开始执行第 {} 个任务, live_activity_id = {}",
+                i + 1,
+                live_activity_id
+            );
+
+            // 构建推送数据: 不做任何转换，直接塞进 content_state
             let live_activity = LiveActivity {
                 event: "update".to_string(),
                 content_state: LiveActivityContentState {
                     blue_url: "blockbeats://m.theblockbeats.info/home".to_string(),
                     red_url: "blockbeats://m.theblockbeats.info/flash/list".to_string(),
-                    title: ios_res.title.clone(),
-                    content: ios_res.content.clone(),
-                    token_price: result,
+                    title: title_clone.clone(),
+                    content: content_clone.clone(),
+                    token_price: tp_vec, // 从前端原样转来的 token
                     market_text: "ETF总净流入".to_string(),
-                    type_title: type_title.to_string(),
-                    total_market_cap: format!("${}M", total_market_cap_task),
-                    market_cap_change24h_usd: format!("${}B", formatted_market_cap),
-                    time: formatted_date,
+                    type_title: "实时消息".to_string(),
 
-                    url: format!(
-                        "blockbeats://m.theblockbeats.info/{}?id={}",
-                        type_field, ios_res.article_id
-                    ),
+                    // 不再对 total_market_cap / market_cap_change24h_usd 做任何单位转换
+                    total_market_cap: tmc,
+                    market_cap_change24h_usd: mcu,
+
+                    // 如果前端不传时间，这里就写死或留空
+                    time: "".to_string(),
+
+                    // 你也可以允许前端传 url
+                    url: format!("blockbeats://m.theblockbeats.info/news?id=9999"),
                 },
                 alert: Alert {
-                    title: ios_res.title.clone(),
-                    body: ios_res.content.clone(),
+                    title: title_clone.clone(),
+                    body: content_clone.clone(),
                     sound: "default".to_string(),
                 },
-                dismissal_date: Utc::now().timestamp() + 4 * 3600, // 4小时后
+                // 4小时后失效
+                dismissal_date: chrono::Utc::now().timestamp() + 4 * 3600,
             };
 
-            // 从环境变量中读取值
+            // 从环境变量读取 APNS_PRODUCTION
             let apns_production = std::env::var("APNS_PRODUCTION")
-                .unwrap_or_else(|_| "false".to_string()) // 默认值为 "false"
-                .parse::<bool>() // 将字符串解析为布尔值
-                .unwrap_or(false); // 如果解析失败，默认值为 false
-            
-            // 构建推送选项
+                .unwrap_or_else(|_| "false".to_string())
+                .parse::<bool>()
+                .unwrap_or(false);
+
             let options = HashMap::from([
                 ("apns_production", serde_json::json!(apns_production)),
                 ("time_to_live", serde_json::json!(86400)),
             ]);
 
-            // 发送推送通知
-            match send_push_notification(&platform, &audience, &live_activity, &options).await {
+            // 调用你自己的推送函数
+            match send_push_notification(
+                &["ios"],
+                live_activity_id.as_str(),
+                &live_activity,
+                &options
+            ).await {
                 Ok((status, response)) => {
                     info!(
-                    "成功发送第 {} 个任务，live_activity_id = {}: HTTP {}",
+                        "成功发送第 {} 个任务, live_activity_id = {}: HTTP {}",
+                        i + 1,
+                        live_activity_id,
+                        status
+                    );
+                    info!("推送响应: {}", response);
+                }
+                Err(e) => error!(
+                    "发送第 {} 个任务, live_activity_id = {} 失败: {:?}",
                     i + 1,
                     live_activity_id,
-                    status
-                );
-                    info!("推送响应: {}", response);
-                },
-                Err(e) => error!(
-                "发送第 {} 个任务，live_activity_id = {} 失败: {:?}",
-                i + 1,
-                live_activity_id,
-                e
-            ),
+                    e
+                ),
             }
         }));
     }
 
-    // 这里也可以在全部任务创建完后，打印一条日志，表示任务都已经生成
     info!("共创建了 {} 个任务等待执行", max_concurrent);
-    // 处理所有推送任务
+
+    // 等待所有并发任务执行完成
     while let Some(res) = push_tasks.next().await {
-        match res {
-            Ok(_) => (), // 任务成功完成
-            Err(e) => error!("推送任务执行失败: {:?}", e),
+        if let Err(e) = res {
+            error!("推送任务执行失败: {:?}", e);
         }
     }
+
     info!("所有任务都已执行完成");
     Ok(HttpResponse::Ok().body("Live activity sent successfully"))
 }

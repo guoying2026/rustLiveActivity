@@ -33,50 +33,50 @@ pub fn format_decimal(number: f64) -> String {
     s
 }
 
-pub fn deal_number(v: f64) -> String {
-    if v >= 1_000_000_000_000_000.0 { // Quadrillion
-        format!("${:.2}Q", v / 1_000_000_000_000_000.0)
-    } else if v >= 1_000_000_000_000.0 { // Trillion
-        format!("${:.2}T", v / 1_000_000_000_000.0)
-    } else if v >= 1_000_000_000.0 { // Billion
-        format!("${:.2}B", v / 1_000_000_000.0)
-    } else if v >= 1_000_000.0 { // Million
-        format!("${:.2}M", v / 1_000_000.0)
-    } else if v >= 1_000.0 { // Thousand
-        format!("${:.2}K", v / 1_000.0)
-    } else { // Below Thousand
-        format!("${:.2}", v)
-    }
-}
-
-pub fn format_percentage(value: &str) -> String {
-    // 尝试将字符串转换为 f64
-    match value.parse::<f64>() {
-        Ok(v) => {
-            if v == 0.0 {
-                "0".to_string()
-            } else {
-                // 使用 {:.2} 保留两位小数
-                let mut s = format!("{:.2}", v.abs());
-
-                // 去除尾部的零和可能的点
-                if s.contains('.') {
-                    while s.ends_with('0') {
-                        s.pop();
-                    }
-                    if s.ends_with('.') {
-                        s.pop();
-                    }
-                }
-
-                // 添加负号如果原始值为负
-                if v < 0.0 {
-                    format!("-{}%", s)
-                } else {
-                    format!("{}%", s)
-                }
-            }
-        },
-        Err(_) => "0".to_string(),
-    }
-}
+// pub fn deal_number(v: f64) -> String {
+//     if v >= 1_000_000_000_000_000.0 { // Quadrillion
+//         format!("${:.2}Q", v / 1_000_000_000_000_000.0)
+//     } else if v >= 1_000_000_000_000.0 { // Trillion
+//         format!("${:.2}T", v / 1_000_000_000_000.0)
+//     } else if v >= 1_000_000_000.0 { // Billion
+//         format!("${:.2}B", v / 1_000_000_000.0)
+//     } else if v >= 1_000_000.0 { // Million
+//         format!("${:.2}M", v / 1_000_000.0)
+//     } else if v >= 1_000.0 { // Thousand
+//         format!("${:.2}K", v / 1_000.0)
+//     } else { // Below Thousand
+//         format!("${:.2}", v)
+//     }
+// }
+// 
+// pub fn format_percentage(value: &str) -> String {
+//     // 尝试将字符串转换为 f64
+//     match value.parse::<f64>() {
+//         Ok(v) => {
+//             if v == 0.0 {
+//                 "0".to_string()
+//             } else {
+//                 // 使用 {:.2} 保留两位小数
+//                 let mut s = format!("{:.2}", v.abs());
+// 
+//                 // 去除尾部的零和可能的点
+//                 if s.contains('.') {
+//                     while s.ends_with('0') {
+//                         s.pop();
+//                     }
+//                     if s.ends_with('.') {
+//                         s.pop();
+//                     }
+//                 }
+// 
+//                 // 添加负号如果原始值为负
+//                 if v < 0.0 {
+//                     format!("-{}%", s)
+//                 } else {
+//                     format!("{}%", s)
+//                 }
+//             }
+//         },
+//         Err(_) => "0".to_string(),
+//     }
+// }
