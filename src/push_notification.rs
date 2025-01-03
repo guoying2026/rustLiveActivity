@@ -84,7 +84,7 @@ pub async fn send_push_notification(
     let audience = HashMap::from([
         ("live_activity_id", live_activity_id),
     ]);
-    
+
     // 构造请求数据
     let payload = serde_json::json!({
         "platform": platform, // 平台
@@ -94,7 +94,12 @@ pub async fn send_push_notification(
         }, // 通知内容
         "options": options, // 其他选项，如是否生产环境等
     });
+    // 将 payload 序列化成带缩进的 JSON 字符串
+    let payload_str = serde_json::to_string_pretty(&payload)
+        .unwrap_or_else(|_| "Failed to serialize payload".to_string());
 
+    // 打印到控制台或日志
+    println!("即将发送的 payload: {}", payload_str);
     // 初始化 HTTP 客户端
     let client = Client::new();
 

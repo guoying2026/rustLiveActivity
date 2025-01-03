@@ -1,5 +1,5 @@
-mod push_notification; // 你自己的推送模块
-mod utils;             // 如果有其他工具函数
+mod push_notification; // 你的推送模块
+mod utils;             // 你的工具函数
 
 use actix_web::{web, App, HttpResponse, HttpServer, Error, HttpRequest};
 use serde::Deserialize;
@@ -10,50 +10,50 @@ use futures::StreamExt;
 use tokio::sync::Semaphore;
 use std::sync::Arc;
 use std::collections::HashMap;
+use dotenv::dotenv;
 
-// 引入你自己的推送所需结构或函数
 use push_notification::{send_push_notification, LiveActivity, LiveActivityContentState, Alert, TokenPrice};
-// 假设你有一个函数 `format_decimal`，若不需要可删除
-use utils::format_decimal;
 
 /// 请求体：Rust 只接收，不做处理
 #[derive(Deserialize, Clone, Debug)]
 struct AddRequest {
-    /// 前端会传一批 live_activity_id，我们直接拿来用
     ios_live_activity_ids: Vec<String>,
-
-    /// 前端传的 Token 数据（如 BTC, ETH...），不做格式化
     token: Option<HashMap<String, TokenInput>>,
-
-    /// 前端传的市值、24h 变化这些字段，同样直接使用
     total_market_cap: Option<String>,
     market_cap_change24h_usd: Option<String>,
-
-    /// 前端可能也会传推送时需要的标题、内容等
     title: Option<String>,
     content: Option<String>,
+    time: Option<String>,
+    url: Option<String>,
+    market_text: Option<String>,
+    type_title: Option<String>,
+    blue_url: Option<String>,
+    red_url: Option<String>,
+    // 新增这个字段
+    apns_production: Option<bool>
 }
 
-/// TokenInput：例如 { "BTC": { "lastPrice": 30000.5, "change24h": "+5%" } }
+/// TokenInput：例如 { "BTC": { "lastPrice": 30000.5, "change24h": "+5%" , "url": "..." } }
 #[derive(Deserialize, Clone, Debug)]
 struct TokenInput {
     #[serde(rename = "lastPrice")]
-    last_price: f64,
-
+    last_price: String,
     #[serde(rename = "change24h")]
     change24h: String,
+    url: String,
 }
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     // 初始化日志
     env_logger::init();
+    dotenv().ok();
 
-    println!("Starting Rust API server on http://127.0.0.1:11115");
+    println!("Starting Rust API server on http://0.0.0.0:11115");
 
     HttpServer::new(|| {
         App::new()
-            // 直接定义路由，不再需要数据库
+            // 路由，处理 POST /send_live_activity
             .route("/send_live_activity", web::post().to(live_activity))
     })
         .bind("0.0.0.0:11115")?
@@ -66,45 +66,54 @@ async fn live_activity(
     req: web::Json<AddRequest>,
     _headers: HttpRequest,
 ) -> Result<HttpResponse, Error> {
+
     // 1. 读取请求体
     let data = req.into_inner();
     info!("收到请求: {:?}", data);
 
-    // 如果前端没有传 ios_live_activity_ids，直接报错
+    // 如果没有 live_activity_ids，直接报错
     if data.ios_live_activity_ids.is_empty() {
         return Ok(HttpResponse::BadRequest().body("没有 live_activity_id"));
     }
 
-    // 2. 组装需要推送给哪些 id
+    // 2. 准备好要推送的 live_activity_ids
     let ios_live_activity_ids = data.ios_live_activity_ids.clone();
 
-    // 3. 构建 token_price 列表（如需完全“不处理”，可以直接放空或者原样塞进 content_state）
+    // 3. 构建 token_price 列表
+    //   (把 data.token 里的可选字段都拼到 TokenPrice)
     let mut token_price_vec = Vec::new();
     if let Some(token_map) = &data.token {
         for (symbol, info) in token_map {
             token_price_vec.push(TokenPrice {
-                // 假设只拼个名字和价格，这里不做任何转换
-                name: format!("{}/USDT", symbol.to_uppercase()),
-                price: format!("${}", format_decimal(info.last_price)), // 如果不想格式化，直接 info.last_price.to_string() 也行
+                name: symbol.to_uppercase(),
+                price: info.last_price.clone(),
                 change: info.change24h.clone(),
-                url: "https://p2p.binance.com/zh-CN/express/buy/ETH/CNY".to_string(),
+                url: info.url.clone(),
             });
         }
     }
 
-    // 4. 其他字段不处理、直接拿过来用
+    // 4. 因为 LiveActivityContentState 的所有字段都是 String，
+    //   我们要在循环外就把这些 Option<String> 转成实际的 String
+    //   给默认值或者空字符串。
     let total_market_cap = data.total_market_cap.clone().unwrap_or_default();
     let market_cap_change24h_usd = data.market_cap_change24h_usd.clone().unwrap_or_default();
-    let title = data.title.clone().unwrap_or_else(|| "实时消息".to_string());
-    let content = data.content.clone().unwrap_or_else(|| "这里是默认内容".to_string());
-
+    let time_str = data.time.clone().unwrap_or_default();
+    let page_url = data.url.clone().unwrap_or_default();
+    let title_str = data.title.clone().unwrap_or_else(|| "默认标题".to_string());
+    let content_str = data.content.clone().unwrap_or_else(|| "默认内容".to_string());
+    let market_text_str = data.market_text.clone().unwrap_or_default();
+    let type_title_str = data.type_title.clone().unwrap_or_default();
+    let blue_url_str = data.blue_url.clone().unwrap_or_else(|| "blockbeats://m.theblockbeats.info/home".to_string());
+    let red_url_str = data.red_url.clone().unwrap_or_else(|| "blockbeats://m.theblockbeats.info/flash/list".to_string());
+    let apns_production = data.apns_production.unwrap_or(false);
     // 5. 并发推送
     let max_concurrent = ios_live_activity_ids.len();
     let semaphore = Arc::new(Semaphore::new(max_concurrent));
     let mut push_tasks = FuturesUnordered::new();
 
     for (i, live_activity_id) in ios_live_activity_ids.into_iter().enumerate() {
-        // 创建任务日志
+
         info!(
             "即将创建第 {}/{} 个推送任务: {}",
             i + 1,
@@ -112,16 +121,24 @@ async fn live_activity(
             live_activity_id
         );
 
-        // 复制进任务
-        let semaphore = semaphore.clone();
-        let title_clone = title.clone();
-        let content_clone = content.clone();
+        // 这里要克隆 / 拷贝我们准备好的字符串，
+        // 因为要在异步闭包里使用它们
+        let sem_clone = semaphore.clone();
+        let token_price_vec_clone = token_price_vec.clone(); // Vec<TokenPrice> 需要它实现 Clone
+
         let tmc = total_market_cap.clone();
         let mcu = market_cap_change24h_usd.clone();
-        let tp_vec = token_price_vec.clone();
+        let t_str = title_str.clone();
+        let c_str = content_str.clone();
+        let time_c = time_str.clone();
+        let url_c = page_url.clone();
+        let market_t = market_text_str.clone();
+        let tt_str = type_title_str.clone();
+        let b_str = blue_url_str.clone();
+        let r_str = red_url_str.clone();
 
         push_tasks.push(tokio::spawn(async move {
-            let _permit = semaphore.acquire().await.unwrap();
+            let _permit = sem_clone.acquire().await.unwrap();
 
             info!(
                 "开始执行第 {} 个任务, live_activity_id = {}",
@@ -129,52 +146,39 @@ async fn live_activity(
                 live_activity_id
             );
 
-            // 构建推送数据: 不做任何转换，直接塞进 content_state
+            // 构建 LiveActivity
             let live_activity = LiveActivity {
                 event: "update".to_string(),
                 content_state: LiveActivityContentState {
-                    blue_url: "blockbeats://m.theblockbeats.info/home".to_string(),
-                    red_url: "blockbeats://m.theblockbeats.info/flash/list".to_string(),
-                    title: title_clone.clone(),
-                    content: content_clone.clone(),
-                    token_price: tp_vec, // 从前端原样转来的 token
-                    market_text: "ETF总净流入".to_string(),
-                    type_title: "实时消息".to_string(),
-
-                    // 不再对 total_market_cap / market_cap_change24h_usd 做任何单位转换
+                    blue_url: b_str,
+                    red_url: r_str,
+                    title: t_str.clone(),
+                    content: c_str.clone(),
+                    token_price: token_price_vec_clone,
+                    market_text: market_t,
+                    type_title: tt_str,
                     total_market_cap: tmc,
                     market_cap_change24h_usd: mcu,
-
-                    // 如果前端不传时间，这里就写死或留空
-                    time: "".to_string(),
-
-                    // 你也可以允许前端传 url
-                    url: format!("blockbeats://m.theblockbeats.info/news?id=9999"),
+                    time: time_c,
+                    url: url_c,
                 },
                 alert: Alert {
-                    title: title_clone.clone(),
-                    body: content_clone.clone(),
+                    title: t_str.clone(),
+                    body: c_str.clone(),
                     sound: "default".to_string(),
                 },
-                // 4小时后失效
-                dismissal_date: chrono::Utc::now().timestamp() + 4 * 3600,
+                dismissal_date: chrono::Utc::now().timestamp() + 4 * 3600, // 4小时后
             };
-
-            // 从环境变量读取 APNS_PRODUCTION
-            let apns_production = std::env::var("APNS_PRODUCTION")
-                .unwrap_or_else(|_| "false".to_string())
-                .parse::<bool>()
-                .unwrap_or(false);
 
             let options = HashMap::from([
                 ("apns_production", serde_json::json!(apns_production)),
                 ("time_to_live", serde_json::json!(86400)),
             ]);
 
-            // 调用你自己的推送函数
+            // 调用推送函数
             match send_push_notification(
                 &["ios"],
-                live_activity_id.as_str(),
+                &live_activity_id,
                 &live_activity,
                 &options
             ).await {
@@ -199,7 +203,6 @@ async fn live_activity(
 
     info!("共创建了 {} 个任务等待执行", max_concurrent);
 
-    // 等待所有并发任务执行完成
     while let Some(res) = push_tasks.next().await {
         if let Err(e) = res {
             error!("推送任务执行失败: {:?}", e);
