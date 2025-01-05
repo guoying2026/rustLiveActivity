@@ -106,7 +106,7 @@ async fn live_activity(
     let type_title_str = data.type_title.clone().unwrap_or_default();
     let blue_url_str = data.blue_url.clone().unwrap_or_else(|| "blockbeats://m.theblockbeats.info/home".to_string());
     let red_url_str = data.red_url.clone().unwrap_or_else(|| "blockbeats://m.theblockbeats.info/flash/list".to_string());
-    let apns_production = data.apns_production.unwrap_or(false);
+    let apns_production = true;
     // 5. 并发推送
     let max_concurrent = ios_live_activity_ids.len();
     let semaphore = Arc::new(Semaphore::new(max_concurrent));
