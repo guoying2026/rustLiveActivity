@@ -30,7 +30,10 @@ struct AddRequest {
     blue_url: Option<String>,
     red_url: Option<String>,
     // 新增这个字段
-    apns_production: Option<bool>
+    apns_production: Option<bool>,
+    dismissal_date: Option<i64>,
+    event: Option<String>,
+    sound: Option<String>,
 }
 
 /// TokenInput：例如 { "BTC": { "lastPrice": 30000.5, "change24h": "+5%" , "url": "..." } }
@@ -107,6 +110,9 @@ async fn live_activity(
     let blue_url_str = data.blue_url.clone().unwrap_or_else(|| "blockbeats://m.theblockbeats.info/home".to_string());
     let red_url_str = data.red_url.clone().unwrap_or_else(|| "blockbeats://m.theblockbeats.info/flash/list".to_string());
     let apns_production = data.apns_production.unwrap_or(false);
+    let dismissal_date_tmp = data.dismissal_date.clone().unwrap_or_default();
+    let event_str = data.event.clone().unwrap_or_default();
+    let sound_str = data.sound.clone().unwrap_or_default();
     // 5. 并发推送
     let max_concurrent = ios_live_activity_ids.len();
     let semaphore = Arc::new(Semaphore::new(max_concurrent));
@@ -136,6 +142,9 @@ async fn live_activity(
         let tt_str = type_title_str.clone();
         let b_str = blue_url_str.clone();
         let r_str = red_url_str.clone();
+        let dismissal_date = dismissal_date_tmp.clone();
+        let event_str = event_str.clone();
+        let sound_str = sound_str.clone();
 
         push_tasks.push(tokio::spawn(async move {
             let _permit = sem_clone.acquire().await.unwrap();
@@ -148,7 +157,7 @@ async fn live_activity(
 
             // 构建 LiveActivity
             let live_activity = LiveActivity {
-                event: "update".to_string(),
+                event: event_str.clone(),
                 content_state: LiveActivityContentState {
                     blue_url: b_str,
                     red_url: r_str,
@@ -165,14 +174,13 @@ async fn live_activity(
                 alert: Alert {
                     title: t_str.clone(),
                     body: c_str.clone(),
-                    sound: "default".to_string(),
+                    sound: sound_str.clone(),
                 },
-                dismissal_date: chrono::Utc::now().timestamp() + 4 * 3600, // 4小时后
+                dismissal_date,
             };
 
             let options = HashMap::from([
                 ("apns_production", serde_json::json!(apns_production)),
-                ("time_to_live", serde_json::json!(86400)),
             ]);
 
             // 调用推送函数
