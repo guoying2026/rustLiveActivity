@@ -1,5 +1,5 @@
 // src/push_notification.rs
-use serde::Serialize;
+use serde::{Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 use reqwest::Client;
@@ -27,7 +27,7 @@ pub enum PushNotificationError {
     CustomError(String),
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, )]
 pub struct LiveActivityContentState {
     pub(crate) blue_url: String,
     pub(crate) red_url: String,
@@ -43,15 +43,22 @@ pub struct LiveActivityContentState {
     pub(crate) url: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, )]
 pub struct Alert {
     pub(crate) title: String,
     pub(crate) body: String,
     pub(crate) sound: String,
 }
 
-#[derive(Serialize)]
-pub struct LiveActivity {
+#[derive(Debug, Serialize, )]
+pub struct LiveActivityUpdate {
+    pub(crate) event: String,
+    #[serde(rename = "content-state")]
+    pub(crate) content_state: LiveActivityContentState,
+    pub(crate) alert: Alert,
+}
+#[derive(Debug, Serialize, )]
+pub struct LiveActivityEnd {
     pub(crate) event: String,
     #[serde(rename = "content-state")]
     pub(crate) content_state: LiveActivityContentState,
@@ -59,19 +66,42 @@ pub struct LiveActivity {
     #[serde(rename = "dismissal-date")]
     pub(crate) dismissal_date: i64,
 }
+#[derive(Debug, Serialize, )]
+pub struct LiveActivityStart {
+    pub(crate) event: String,
+    #[serde(rename = "content-state")]
+    pub(crate) content_state: LiveActivityContentState,
+    pub(crate) alert: Alert,
+    #[serde(rename = "attributes-type")]
+    pub(crate) attributes_type: String,
+    pub(crate) attributes: LiveActivityAttributes,
+}
+#[derive(Serialize, Debug)]
+pub struct LiveActivityAttributes {
+    pub(crate) name: String,
+}
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct TokenPrice {
     pub(crate) name: String,
     pub(crate) price: String,
     pub(crate) change: String,
     pub(crate) url: String,
 }
-
+#[derive(Debug, Serialize, )]
+#[serde(untagged)]
+pub enum LiveActivityEnum {
+    /// start 事件
+    Start(LiveActivityStart),
+    /// update 事件
+    Update(LiveActivityUpdate),
+    /// end 事件
+    End(LiveActivityEnd),
+}
 pub async fn send_push_notification(
     platform: &[&str],
-    live_activity_id: &str,
-    live_activity: &LiveActivity,
+    _live_activity_id: &str,
+    live_activity: &LiveActivityEnum, // 修改为枚举类型
     options: &HashMap<&str, serde_json::Value>,
 ) -> Result<(u16, String), PushNotificationError> {
     // 从环境变量读取极光推送的 Key 和 Secret
@@ -80,19 +110,16 @@ pub async fn send_push_notification(
     let push_secret = std::env::var("JG_PUSH_SECRET")
         .map_err(|_| PushNotificationError::ConfigError("JG_PUSH_SECRET not set".to_string()))?;
 
-    // 构造一个单键的 HashMap，表示要推送给这个 live_activity_id
-    let audience = HashMap::from([
-        ("live_activity_id", live_activity_id),
-    ]);
-
     // 构造请求数据
     let payload = serde_json::json!({
-        "platform": platform, // 平台
-        "audience": audience, // 推送目标
+        "platform": platform,
         "live_activity": {
             "ios": live_activity
-        }, // 通知内容
-        "options": options, // 其他选项，如是否生产环境等
+        },
+        "options": options,
+        "audience": {
+            "live_activity_id": _live_activity_id
+        }
     });
     // 将 payload 序列化成带缩进的 JSON 字符串
     let payload_str = serde_json::to_string_pretty(&payload)
@@ -123,9 +150,13 @@ pub async fn send_push_notification(
     if status.is_success() {
         Ok((status.as_u16(), response_text))
     } else {
-        Err(PushNotificationError::CustomError(format!(
-            "Failed to send push notification: {}",
-            response_text
-        )))
+        let err_message = format!(
+            "Failed to send push notification: status: {}, response: {}, payload: {}",
+            status,
+            response_text,
+            payload_str
+        );
+        log::error!("{}", err_message);
+        Err(PushNotificationError::CustomError(err_message))
     }
 }

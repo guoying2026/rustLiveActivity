@@ -12,13 +12,27 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use dotenv::dotenv;
 
-use push_notification::{send_push_notification, LiveActivity, LiveActivityContentState, Alert, TokenPrice};
+// 注意：这里引入你需要用到的结构
+use push_notification::{
+    send_push_notification,
+    // 三种结构体
+    LiveActivityStart,
+    LiveActivityUpdate,
+    LiveActivityEnd,
+    // 公用的部分
+    LiveActivityContentState,
+    LiveActivityAttributes,
+    Alert,
+    TokenPrice,
+    // 枚举
+    LiveActivityEnum,
+};
 
 /// 请求体：Rust 只接收，不做处理
 #[derive(Deserialize, Clone, Debug)]
 struct AddRequest {
     ios_live_activity_ids: Vec<String>,
-    token: Option<HashMap<String, TokenInput>>,
+    token: Option<Vec<TokenPriceInput>>,
     total_market_cap: Option<String>,
     market_cap_change24h_usd: Option<String>,
     title: Option<String>,
@@ -34,15 +48,15 @@ struct AddRequest {
     dismissal_date: Option<i64>,
     event: Option<String>,
     sound: Option<String>,
+    attributes_name: Option<String>,
+    attributes_type: Option<String>,
 }
 
-/// TokenInput：例如 { "BTC": { "lastPrice": 30000.5, "change24h": "+5%" , "url": "..." } }
 #[derive(Deserialize, Clone, Debug)]
-struct TokenInput {
-    #[serde(rename = "lastPrice")]
-    last_price: String,
-    #[serde(rename = "change24h")]
-    change24h: String,
+struct TokenPriceInput {
+    name: String,
+    price: String,
+    change: String,
     url: String,
 }
 
@@ -59,7 +73,7 @@ async fn main() -> std::io::Result<()> {
             // 路由，处理 POST /send_live_activity
             .route("/send_live_activity", web::post().to(live_activity))
     })
-        .bind("0.0.0.0:11115")?
+        .bind("0.0.0.0:11116")?
         .run()
         .await
 }
@@ -83,22 +97,20 @@ async fn live_activity(
     let ios_live_activity_ids = data.ios_live_activity_ids.clone();
 
     // 3. 构建 token_price 列表
-    //   (把 data.token 里的可选字段都拼到 TokenPrice)
     let mut token_price_vec = Vec::new();
-    if let Some(token_map) = &data.token {
-        for (symbol, info) in token_map {
+    if let Some(token_array) = &data.token {
+        for item in token_array {
+            // item 即 TokenPriceInput { name, price, change, url }
             token_price_vec.push(TokenPrice {
-                name: symbol.to_uppercase(),
-                price: info.last_price.clone(),
-                change: info.change24h.clone(),
-                url: info.url.clone(),
+                name: item.name.clone(),     // 直接复制
+                price: item.price.clone(),
+                change: item.change.clone(),
+                url: item.url.clone(),
             });
         }
     }
 
-    // 4. 因为 LiveActivityContentState 的所有字段都是 String，
-    //   我们要在循环外就把这些 Option<String> 转成实际的 String
-    //   给默认值或者空字符串。
+    // 4. 从请求里取出各种 Option<String>，转成 String
     let total_market_cap = data.total_market_cap.clone().unwrap_or_default();
     let market_cap_change24h_usd = data.market_cap_change24h_usd.clone().unwrap_or_default();
     let time_str = data.time.clone().unwrap_or_default();
@@ -110,27 +122,32 @@ async fn live_activity(
     let blue_url_str = data.blue_url.clone().unwrap_or_else(|| "blockbeats://m.theblockbeats.info/home".to_string());
     let red_url_str = data.red_url.clone().unwrap_or_else(|| "blockbeats://m.theblockbeats.info/flash/list".to_string());
     let apns_production = data.apns_production.unwrap_or(false);
-    let dismissal_date_tmp = data.dismissal_date.clone().unwrap_or_default();
+    let dismissal_date_tmp = data.dismissal_date.unwrap_or_default();
     let event_str = data.event.clone().unwrap_or_default();
     let sound_str = data.sound.clone().unwrap_or_default();
-    // 5. 并发推送
-    let max_concurrent = ios_live_activity_ids.len();
+    let attributes_name_str = data.attributes_name.clone().unwrap_or_default();
+    let attributes_type_str = data.attributes_type.clone().unwrap_or_default();
+
+    // 5. 并发推送 (可选：改成固定并发量，而不是 ios_live_activity_ids.len())
+    //    比如这里限制每次最多并发20:
+    let max_concurrent = 20;
     let semaphore = Arc::new(Semaphore::new(max_concurrent));
     let mut push_tasks = FuturesUnordered::new();
 
     for (i, live_activity_id) in ios_live_activity_ids.into_iter().enumerate() {
-
         info!(
             "即将创建第 {}/{} 个推送任务: {}",
             i + 1,
+            // 如果你改成固定并发数20的话，这里还是可以用 i+1, 并不知道总的 concurrency
+            // 不过你想打印总数的话，可以先 let total_ids = data.ios_live_activity_ids.len();
+            // 再放进这里。
             max_concurrent,
             live_activity_id
         );
 
-        // 这里要克隆 / 拷贝我们准备好的字符串，
-        // 因为要在异步闭包里使用它们
+        // 这里克隆，供异步任务使用
         let sem_clone = semaphore.clone();
-        let token_price_vec_clone = token_price_vec.clone(); // Vec<TokenPrice> 需要它实现 Clone
+        let token_price_vec_clone = token_price_vec.clone();
 
         let tmc = total_market_cap.clone();
         let mcu = market_cap_change24h_usd.clone();
@@ -142,9 +159,11 @@ async fn live_activity(
         let tt_str = type_title_str.clone();
         let b_str = blue_url_str.clone();
         let r_str = red_url_str.clone();
-        let dismissal_date = dismissal_date_tmp.clone();
-        let event_str = event_str.clone();
-        let sound_str = sound_str.clone();
+        let dismissal_date = dismissal_date_tmp; // i64
+        let event_str_inner = event_str.clone();
+        let sound_str_inner = sound_str.clone();
+        let attributes_name_inner = attributes_name_str.clone();
+        let attributes_type_inner = attributes_type_str.clone();
 
         push_tasks.push(tokio::spawn(async move {
             let _permit = sem_clone.acquire().await.unwrap();
@@ -155,30 +174,99 @@ async fn live_activity(
                 live_activity_id
             );
 
-            // 构建 LiveActivity
-            let live_activity = LiveActivity {
-                event: event_str.clone(),
-                content_state: LiveActivityContentState {
-                    blue_url: b_str,
-                    red_url: r_str,
-                    title: t_str.clone(),
-                    content: c_str.clone(),
-                    token_price: token_price_vec_clone,
-                    market_text: market_t,
-                    type_title: tt_str,
-                    total_market_cap: tmc,
-                    market_cap_change24h_usd: mcu,
-                    time: time_c,
-                    url: url_c,
-                },
-                alert: Alert {
-                    title: t_str.clone(),
-                    body: c_str.clone(),
-                    sound: sound_str.clone(),
-                },
-                dismissal_date,
+            // 根据 event_str，构造三种不同的枚举分支
+            let live_activity_enum = match event_str_inner.as_str() {
+                "start" => {
+                    LiveActivityEnum::Start(
+                        LiveActivityStart {
+                            event: "start".to_string(),
+                            content_state: LiveActivityContentState {
+                                blue_url: b_str.clone(),
+                                red_url: r_str.clone(),
+                                title: t_str.clone(),
+                                content: c_str.clone(),
+                                token_price: token_price_vec_clone,
+                                market_text: market_t.clone(),
+                                type_title: tt_str.clone(),
+                                total_market_cap: tmc.clone(),
+                                market_cap_change24h_usd: mcu.clone(),
+                                time: time_c.clone(),
+                                url: url_c.clone(),
+                            },
+                            alert: Alert {
+                                title: t_str.clone(),
+                                body: c_str.clone(),
+                                sound: sound_str_inner.clone(),
+                            },
+                            attributes_type: attributes_type_inner.clone(),
+                            attributes: LiveActivityAttributes {
+                               name: attributes_name_inner.clone(),
+                            },
+                        }
+                    )
+                }
+
+                "update" => {
+                    LiveActivityEnum::Update(
+                        LiveActivityUpdate {
+                            event: "update".to_string(),
+                            content_state: LiveActivityContentState {
+                                blue_url: b_str.clone(),
+                                red_url: r_str.clone(),
+                                title: t_str.clone(),
+                                content: c_str.clone(),
+                                token_price: token_price_vec_clone,
+                                market_text: market_t.clone(),
+                                type_title: tt_str.clone(),
+                                total_market_cap: tmc.clone(),
+                                market_cap_change24h_usd: mcu.clone(),
+                                time: time_c.clone(),
+                                url: url_c.clone(),
+                            },
+                            alert: Alert {
+                                title: t_str.clone(),
+                                body: c_str.clone(),
+                                sound: sound_str_inner.clone(),
+                            },
+                        }
+                    )
+                }
+
+                "end" => {
+                    LiveActivityEnum::End(
+                        LiveActivityEnd {
+                            event: "end".to_string(),
+                            content_state: LiveActivityContentState {
+                                blue_url: b_str.clone(),
+                                red_url: r_str.clone(),
+                                title: t_str.clone(),
+                                content: c_str.clone(),
+                                token_price: token_price_vec_clone,
+                                market_text: market_t.clone(),
+                                type_title: tt_str.clone(),
+                                total_market_cap: tmc.clone(),
+                                market_cap_change24h_usd: mcu.clone(),
+                                time: time_c.clone(),
+                                url: url_c.clone(),
+                            },
+                            alert: Alert {
+                                title: t_str.clone(),
+                                body: c_str.clone(),
+                                sound: sound_str_inner.clone(),
+                            },
+                            dismissal_date,
+                        }
+                    )
+                }
+
+                _ => {
+                    let err_msg = format!("Unsupported event type: {}", event_str_inner);
+                    error!("{}", err_msg);
+                    return Err(err_msg);
+                }
             };
 
+            // APNs 环境选项
             let options = HashMap::from([
                 ("apns_production", serde_json::json!(apns_production)),
             ]);
@@ -187,7 +275,7 @@ async fn live_activity(
             match send_push_notification(
                 &["ios"],
                 &live_activity_id,
-                &live_activity,
+                &live_activity_enum,
                 &options
             ).await {
                 Ok((status, response)) => {
@@ -198,22 +286,29 @@ async fn live_activity(
                         status
                     );
                     info!("推送响应: {}", response);
+                    Ok(())
                 }
-                Err(e) => error!(
-                    "发送第 {} 个任务, live_activity_id = {} 失败: {:?}",
-                    i + 1,
-                    live_activity_id,
-                    e
-                ),
+                Err(e) => {
+                    let err_msg = format!(
+                        "发送第 {} 个任务失败, live_activity_id = {}, error: {:?}",
+                        i + 1,
+                        live_activity_id,
+                        e
+                    );
+                    error!("{}", err_msg);
+                    Err(err_msg)
+                }
             }
         }));
     }
 
-    info!("共创建了 {} 个任务等待执行", max_concurrent);
+    info!("共创建了任务等待执行(并发控制) ...");
 
     while let Some(res) = push_tasks.next().await {
-        if let Err(e) = res {
-            error!("推送任务执行失败: {:?}", e);
+        match res {
+            Ok(Ok(())) => info!("任务成功完成"),
+            Ok(Err(e)) => error!("任务逻辑失败: {}", e),
+            Err(e) => error!("任务运行失败: {:?}", e),
         }
     }
 
