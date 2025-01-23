@@ -66,7 +66,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
     dotenv().ok();
 
-    println!("Starting Rust API server on http://0.0.0.0:11115");
+    println!("Starting Rust API server on http://0.0.0.0:11116");
 
     HttpServer::new(|| {
         App::new()
