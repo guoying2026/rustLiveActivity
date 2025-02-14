@@ -27,10 +27,12 @@ use push_notification::{
     // 枚举
     LiveActivityEnum,
 };
+use crate::push_notification::Callback;
 
 /// 请求体：Rust 只接收，不做处理
 #[derive(Deserialize, Clone, Debug)]
 struct AddRequest {
+    callback: Option<Callback>,  // 添加 `callback` 字段
     ios_live_activity_ids: Vec<String>,
     token: Option<Vec<TokenPriceInput>>,
     total_market_cap: Option<String>,
@@ -127,8 +129,12 @@ async fn live_activity(
     let sound_str = data.sound.clone().unwrap_or_default();
     let attributes_name_str = data.attributes_name.clone().unwrap_or_default();
     let attributes_type_str = data.attributes_type.clone().unwrap_or_default();
+    
+    // 使用 Arc 来共享 callback，避免值移动
+    let callback_arc = Arc::new(data.callback);  // 包裹在 Arc 内，不做所有权转移
 
-    // 5. 并发推送 (可选：改成固定并发量，而不是 ios_live_activity_ids.len())
+
+    // 6. 并发推送 (可选：改成固定并发量，而不是 ios_live_activity_ids.len())
     //    比如这里限制每次最多并发20:
     let max_concurrent = 20;
     let semaphore = Arc::new(Semaphore::new(max_concurrent));
@@ -164,6 +170,7 @@ async fn live_activity(
         let sound_str_inner = sound_str.clone();
         let attributes_name_inner = attributes_name_str.clone();
         let attributes_type_inner = attributes_type_str.clone();
+        let callback = callback_arc.clone();
 
         push_tasks.push(tokio::spawn(async move {
             let _permit = sem_clone.acquire().await.unwrap();
@@ -276,7 +283,8 @@ async fn live_activity(
                 &["ios"],
                 &live_activity_id,
                 &live_activity_enum,
-                &options
+                &options,
+                &callback,
             ).await {
                 Ok((status, response)) => {
                     info!(

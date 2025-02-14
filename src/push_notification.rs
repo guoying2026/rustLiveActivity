@@ -1,5 +1,5 @@
 // src/push_notification.rs
-use serde::{Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 use reqwest::Client;
@@ -15,6 +15,14 @@ impl From<PushNotificationError> for actix_web::Error {
             PushNotificationError::CustomError(msg) => ErrorInternalServerError(msg),
         }
     }
+}
+
+#[derive(Deserialize, Clone, Debug, Serialize)]
+pub struct Callback {
+    pub url: Option<String>,
+    pub params: Option<HashMap<String, serde_json::Value>>,
+    #[serde(rename="type")]
+    pub type_: Option<i32>,  // 使用 `type_` 作为字段名称，避免与关键字冲突
 }
 
 #[derive(Error, Debug)]
@@ -103,6 +111,7 @@ pub async fn send_push_notification(
     _live_activity_id: &str,
     live_activity: &LiveActivityEnum, // 修改为枚举类型
     options: &HashMap<&str, serde_json::Value>,
+    callback: &Option<Callback>,
 ) -> Result<(u16, String), PushNotificationError> {
     // 从环境变量读取极光推送的 Key 和 Secret
     let push_key = std::env::var("JG_PUSH_KEY")
@@ -110,8 +119,24 @@ pub async fn send_push_notification(
     let push_secret = std::env::var("JG_PUSH_SECRET")
         .map_err(|_| PushNotificationError::ConfigError("JG_PUSH_SECRET not set".to_string()))?;
 
+    // 先克隆 callback 以避免对原始值的移动
+    let mut callback = callback.clone();
+
+    // 如果 callback 存在且 params 存在
+    if let Some(ref mut cb) = callback {
+        if let Some(ref mut params) = cb.params {
+            // 将 live_activity_id 加入 params 中
+            params.insert("live_activity_id".to_string(), serde_json::json!(_live_activity_id));
+        } else {
+            // 如果没有 params，则创建一个新的 params 并加入 live_activity_id
+            cb.params = Some(HashMap::from([(
+                "live_activity_id".to_string(),
+                serde_json::json!(_live_activity_id),
+            )]));
+        }
+    }
     // 构造请求数据
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "platform": platform,
         "live_activity": {
             "ios": live_activity
@@ -119,8 +144,12 @@ pub async fn send_push_notification(
         "options": options,
         "audience": {
             "live_activity_id": _live_activity_id
-        }
+        },
     });
+    // 如果 callback 存在，就将其加入 payload
+    if let Some(cb) = callback {
+        payload["callback"] = serde_json::json!(cb);
+    }
     // 将 payload 序列化成带缩进的 JSON 字符串
     let payload_str = serde_json::to_string_pretty(&payload)
         .unwrap_or_else(|_| "Failed to serialize payload".to_string());
