@@ -50,6 +50,7 @@ struct AddRequest {
     sound: Option<String>,
     attributes_name: Option<String>,
     attributes_type: Option<String>,
+    send_timestamp: Option<u64>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -127,6 +128,7 @@ async fn live_activity(
     let sound_str = data.sound.clone().unwrap_or_default();
     let attributes_name_str = data.attributes_name.clone().unwrap_or_default();
     let attributes_type_str = data.attributes_type.clone().unwrap_or_default();
+    let send_timestamp_tmp = data.send_timestamp.clone().unwrap_or_default();
 
     // 5. 并发推送 (可选：改成固定并发量，而不是 ios_live_activity_ids.len())
     //    比如这里限制每次最多并发20:
@@ -164,6 +166,7 @@ async fn live_activity(
         let sound_str_inner = sound_str.clone();
         let attributes_name_inner = attributes_name_str.clone();
         let attributes_type_inner = attributes_type_str.clone();
+        let send_timestamp_c = send_timestamp_tmp.clone();
 
         push_tasks.push(tokio::spawn(async move {
             let _permit = sem_clone.acquire().await.unwrap();
@@ -192,6 +195,7 @@ async fn live_activity(
                                 market_cap_change24h_usd: mcu.clone(),
                                 time: time_c.clone(),
                                 url: url_c.clone(),
+                                send_timestamp: send_timestamp_c.clone(),
                             },
                             alert: Alert {
                                 title: t_str.clone(),
@@ -222,6 +226,7 @@ async fn live_activity(
                                 market_cap_change24h_usd: mcu.clone(),
                                 time: time_c.clone(),
                                 url: url_c.clone(),
+                                send_timestamp: send_timestamp_c.clone(),
                             },
                             alert: Alert {
                                 title: t_str.clone(),
@@ -248,6 +253,7 @@ async fn live_activity(
                                 market_cap_change24h_usd: mcu.clone(),
                                 time: time_c.clone(),
                                 url: url_c.clone(),
+                                send_timestamp: send_timestamp_c.clone(),
                             },
                             alert: Alert {
                                 title: t_str.clone(),
